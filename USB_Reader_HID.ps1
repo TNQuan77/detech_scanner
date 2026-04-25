@@ -183,20 +183,58 @@ public class BarcodeRawInput {
     // New device events: "Scanner N\tdevicePath"
     public static ConcurrentQueue<string> NewDevices = new ConcurrentQueue<string>();
 
-    private static Dictionary<IntPtr, string>        _ids   = new Dictionary<IntPtr, string>();
-    private static Dictionary<IntPtr, StringBuilder> _bufs  = new Dictionary<IntPtr, StringBuilder>();
-    private static Dictionary<IntPtr, DateTime>      _times = new Dictionary<IntPtr, DateTime>();
-    private static int _nextId    = 1;
-    private static int _threshold = 100;
-    private static int _minLen    = 3;
+    private static Dictionary<IntPtr, string>        _ids      = new Dictionary<IntPtr, string>();
+    private static Dictionary<IntPtr, StringBuilder> _bufs     = new Dictionary<IntPtr, StringBuilder>();
+    private static Dictionary<IntPtr, DateTime>      _times    = new Dictionary<IntPtr, DateTime>();
+    private static Dictionary<string, string>        _pathMap  = new Dictionary<string, string>(); // HID path -> "Scanner N"
+    private static string _mapFile  = "";
+    private static int    _nextId   = 1;
+    private static int    _threshold = 100;
+    private static int    _minLen    = 3;
+
+    // Load mapping da luu tu lan truoc (dam bao cung thiet bi = cung cot sau khi khoi dong lai)
+    public static void LoadMap(string mapFilePath) {
+        _mapFile = mapFilePath;
+        if (!System.IO.File.Exists(mapFilePath)) return;
+        foreach (string line in System.IO.File.ReadAllLines(mapFilePath, System.Text.Encoding.UTF8)) {
+            string[] parts = line.Split('\t');
+            if (parts.Length != 2) continue;
+            _pathMap[parts[0]] = parts[1];
+            // Dam bao _nextId luon lon hon tat ca so da dung
+            int n;
+            string[] np = parts[1].Split(' ');
+            if (np.Length >= 2 && int.TryParse(np[np.Length - 1], out n) && n >= _nextId)
+                _nextId = n + 1;
+        }
+    }
+
+    private static void SaveMap() {
+        if (string.IsNullOrEmpty(_mapFile)) return;
+        try {
+            var lines = new List<string>();
+            foreach (var kv in _pathMap) lines.Add(kv.Key + "\t" + kv.Value);
+            System.IO.File.WriteAllLines(_mapFile, lines.ToArray(), System.Text.Encoding.UTF8);
+        } catch { }
+    }
 
     private static string GetOrAssign(IntPtr hDevice, out bool isNew) {
         isNew = false;
-        if (!_ids.ContainsKey(hDevice)) {
+        if (_ids.ContainsKey(hDevice)) return _ids[hDevice];
+
+        string path = GetDevicePath(hDevice);
+        string name;
+        if (_pathMap.ContainsKey(path)) {
+            // Thiet bi da biet -> dung lai ten cu, giu nguyen cot
+            name = _pathMap[path];
+        } else {
+            // Scanner moi chua gap lan nao
             isNew = true;
-            _ids[hDevice] = "Scanner " + _nextId++;
+            name = "Scanner " + _nextId++;
+            _pathMap[path] = name;
+            SaveMap();
         }
-        return _ids[hDevice];
+        _ids[hDevice] = name;
+        return name;
     }
 
     private static string GetDevicePath(IntPtr hDevice) {
@@ -486,6 +524,7 @@ $form.Add_FormClosed({
     Write-Log "Da thoat."
 })
 
+[BarcodeRawInput]::LoadMap("$PSScriptRoot\scanner_map.txt")
 [BarcodeRawInput]::Register($form.Handle, $ScannerSpeedMs, $MinBarcodeLength)
 $timer.Start()
 Write-Log "Dang lang nghe ma vach (Raw Input)..."
