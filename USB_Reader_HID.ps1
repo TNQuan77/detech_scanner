@@ -352,7 +352,15 @@ public class ScannerForm : System.Windows.Forms.Form {
 function Write-Log {
     param([string]$msg)
     $line = "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] $msg"
-    Add-Content -Path $LogFile -Value $line -Encoding UTF8
+    try {
+        $fs = [System.IO.FileStream]::new($LogFile,
+            [System.IO.FileMode]::Append,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::ReadWrite)
+        $sw = [System.IO.StreamWriter]::new($fs, [System.Text.Encoding]::UTF8)
+        $sw.WriteLine($line)
+        $sw.Dispose()
+    } catch {}
     Write-Host $line
 }
 
