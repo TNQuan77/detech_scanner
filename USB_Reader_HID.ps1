@@ -298,10 +298,6 @@ public class BarcodeRawInput {
             IntPtr hDevice = header.hDevice;
             uint   vk      = kb.VKey;
 
-            bool   isNew;
-            string sid = GetOrAssign(hDevice, out isNew);
-            if (isNew) NewDevices.Enqueue(sid + "\t" + GetDevicePath(hDevice));
-
             if (!_bufs.ContainsKey(hDevice))  _bufs[hDevice]  = new StringBuilder(256);
             if (!_times.ContainsKey(hDevice)) _times[hDevice] = DateTime.MinValue;
 
@@ -315,7 +311,14 @@ public class BarcodeRawInput {
             if (vk == 13) { // Enter
                 string code = sbuf.ToString().Trim();
                 sbuf.Clear();
-                if (code.Length >= _minLen) Queue.Enqueue(sid + "\t" + code);
+                // Chi gan Scanner ID khi nhan duoc barcode hop le
+                // -> keyboard thuong khong bao gio duoc dang ky
+                if (code.Length >= _minLen) {
+                    bool   isNew;
+                    string sid = GetOrAssign(hDevice, out isNew);
+                    if (isNew) NewDevices.Enqueue(sid + "\t" + GetDevicePath(hDevice));
+                    Queue.Enqueue(sid + "\t" + code);
+                }
                 return;
             }
             if (vk == 8) { // Backspace
