@@ -35,14 +35,13 @@ schtasks /create ^
     /tr "cmd.exe /c \"%BAT_FILE%\"" ^
     /sc ONLOGON ^
     /rl HIGHEST ^
-    /f ^
-    /delay 0000:30
+    /f
 
 if %errorLevel% equ 0 (
     echo.
     echo [OK] Dang ky thanh cong!
     echo      Task name : %TASK_NAME%
-    echo      Bat dau   : 30 giay sau khi dang nhap Windows
+    echo      Bat dau   : ngay khi dang nhap Windows
     echo      File      : %BAT_FILE%
     echo.
 ) else (
