@@ -77,6 +77,7 @@ if ($TestDateChange) {
     Start-MainScript -SimDate $yesterday
     Wait-ForReady
     Send-Barcodes -Codes $Barcodes
+    Start-Sleep -Milliseconds 3000   # cho timer flush Excel (2s) kip chay truoc khi kill
 
     Write-Host ""
     Write-Host "Buoc 2: Gia lap ngay hom nay ($today)"
