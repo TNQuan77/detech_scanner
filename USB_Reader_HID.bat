@@ -8,7 +8,7 @@ setlocal
 :: ============================================================
 
 :: ---------- CAU HINH ----------
-set EXCEL_FILE=%~dp0ABC.xlsx
+set EXCEL_FILE=%~dp0thoi_gian_dong_hang.xlsx
 set LOG_FILE=%~dp0USB_Reader.log
 
 :: Nguong toc do (ms): phim den trong vong bao nhieu ms = may quet (khong phai nguoi gõ)

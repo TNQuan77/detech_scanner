@@ -1,6 +1,6 @@
 # USB_Reader_HID.ps1
 param(
-    [string]$ExcelFile     = "$PSScriptRoot\ABC.xlsx",
+    [string]$ExcelFile     = "$PSScriptRoot\thoi_gian_dong_hang.xlsx",
     [string]$LogFile       = "$PSScriptRoot\USB_Reader.log",
     [int]$ScannerSpeedMs   = 100,
     [int]$MinBarcodeLength = 3
@@ -36,8 +36,35 @@ public class ExcelFinder {
         obj.GetType().InvokeMember(method, BindingFlags.InvokeMethod, null, obj, args);
     }
 
+    private static object FindOrCreateSheet(object wb, string sheetDate) {
+        object sheets   = Get(wb, "Sheets");
+        int    cnt      = (int)Get(sheets, "Count");
+        // Tim sheet co ten la ngay hom nay
+        for (int s = 1; s <= cnt; s++) {
+            object sh = Get(sheets, "Item", new object[] { s });
+            if (string.Equals((string)Get(sh, "Name"), sheetDate, StringComparison.OrdinalIgnoreCase))
+                return sh;
+        }
+        // Chua co -> tao sheet moi sau sheet cuoi cung
+        object last = Get(sheets, "Item", new object[] { cnt });
+        object mv   = System.Reflection.Missing.Value;
+        object ws   = sheets.GetType().InvokeMember("Add", System.Reflection.BindingFlags.InvokeMethod,
+                          null, sheets, new object[] { mv, last, mv, mv });
+        Set(ws, "Name", new object[] { sheetDate });
+        // Header
+        object c = Get(ws, "Cells");
+        Set(Get(c, "Item", new object[] { 1, 1 }), "Value", new object[] { "STT" });
+        Set(Get(c, "Item", new object[] { 1, 2 }), "Value", new object[] { "Thoi gian" });
+        Set(Get(Get(Get(ws, "Rows"), "Item", new object[] { 1 }), "Font"), "Bold", new object[] { true });
+        Set(Get(Get(ws, "Columns"), "Item", new object[] { 1 }), "ColumnWidth", new object[] { 6.0 });
+        Set(Get(Get(ws, "Columns"), "Item", new object[] { 2 }), "ColumnWidth", new object[] { 22.0 });
+        return ws;
+    }
+
     // scannerNames: ten hien thi (VD "T27H"), colIndices: vi tri cot (1-based -> Excel col 3,4,5,...)
-    public static int AppendBarcodes(string filePath, string[] timestamps, string[] barcodes, string[] scannerNames, int[] colIndices) {
+    // sheetDate: ten sheet theo ngay (VD "25-04-2026")
+    public static int AppendBarcodes(string filePath, string[] timestamps, string[] barcodes,
+                                     string[] scannerNames, int[] colIndices, string sheetDate) {
         string normPath = System.IO.Path.GetFullPath(filePath).ToLower();
         IntPtr hMain = IntPtr.Zero;
 
@@ -69,7 +96,7 @@ public class ExcelFinder {
                     string wbFull = (string)Get(wb, "FullName");
                     if (System.IO.Path.GetFullPath(wbFull).ToLower() != normPath) continue;
 
-                    object ws        = Get(Get(wb, "Sheets"), "Item", new object[] { 1 });
+                    object ws        = FindOrCreateSheet(wb, sheetDate);
                     object usedRange = Get(ws, "UsedRange");
                     int lastRow      = (int)Get(Get(usedRange, "Rows"), "Count");
                     int nextRow      = Math.Max(2, lastRow + 1);
@@ -450,11 +477,27 @@ function Get-HiddenExcel {
 # ----------------------------------------------------------------
 # Flush batch vao Excel
 # ----------------------------------------------------------------
+function Find-OrCreateSheet {
+    param($Workbook, [string]$SheetName)
+    for ($s = 1; $s -le $Workbook.Sheets.Count; $s++) {
+        if ($Workbook.Sheets.Item($s).Name -eq $SheetName) { return $Workbook.Sheets.Item($s) }
+    }
+    # Tao sheet moi sau sheet cuoi
+    $ws = $Workbook.Sheets.Add([System.Reflection.Missing]::Value, $Workbook.Sheets.Item($Workbook.Sheets.Count))
+    $ws.Name                         = $SheetName
+    $ws.Cells.Item(1,1)              = "STT"
+    $ws.Cells.Item(1,2)              = "Thoi gian"
+    $ws.Rows.Item(1).Font.Bold       = $true
+    $ws.Columns.Item(1).ColumnWidth  = 6
+    $ws.Columns.Item(2).ColumnWidth  = 22
+    return $ws
+}
+
 function Flush-ToExcel {
-    param([string]$Path, [string[]]$Barcodes, [string[]]$Scanners, [int[]]$Cols)
+    param([string]$Path, [string[]]$Barcodes, [string[]]$Scanners, [int[]]$Cols, [string]$SheetDate)
 
     $timestamps = $Barcodes | ForEach-Object { Get-Date -Format "yyyy-MM-dd HH:mm:ss" }
-    $firstStt   = [ExcelFinder]::AppendBarcodes($Path, $timestamps, $Barcodes, $Scanners, $Cols)
+    $firstStt   = [ExcelFinder]::AppendBarcodes($Path, $timestamps, $Barcodes, $Scanners, $Cols, $SheetDate)
     if ($firstStt -ge 0) {
         for ($i = 0; $i -lt $Barcodes.Length; $i++) {
             Write-Log "[$($Scanners[$i])] Ghi STT $($firstStt + $i): $($Barcodes[$i])"
@@ -470,16 +513,17 @@ function Flush-ToExcel {
             $wb = $xl.Workbooks.Open($Path)
         } else {
             $wb  = $xl.Workbooks.Add()
-            $ws0 = $wb.Sheets.Item(1)
-            $ws0.Cells.Item(1,1) = "STT"
-            $ws0.Cells.Item(1,2) = "Thoi gian"
-            $ws0.Rows.Item(1).Font.Bold      = $true
-            $ws0.Columns.Item(1).ColumnWidth = 6
-            $ws0.Columns.Item(2).ColumnWidth = 22
+            # Dat ten sheet dau tien la ngay hom nay
+            $wb.Sheets.Item(1).Name          = $SheetDate
+            $wb.Sheets.Item(1).Cells.Item(1,1) = "STT"
+            $wb.Sheets.Item(1).Cells.Item(1,2) = "Thoi gian"
+            $wb.Sheets.Item(1).Rows.Item(1).Font.Bold      = $true
+            $wb.Sheets.Item(1).Columns.Item(1).ColumnWidth = 6
+            $wb.Sheets.Item(1).Columns.Item(2).ColumnWidth = 22
             $wb.SaveAs($Path, 51)
         }
 
-        $ws      = $wb.Sheets.Item(1)
+        $ws      = Find-OrCreateSheet -Workbook $wb -SheetName $SheetDate
         $nextRow = [Math]::Max(2, $ws.UsedRange.Rows.Count + 1)
 
         for ($i = 0; $i -lt $Barcodes.Length; $i++) {
@@ -522,11 +566,15 @@ $FLUSH_INTERVAL_MS      = 2000
 # ----------------------------------------------------------------
 # Khoi dong
 # ----------------------------------------------------------------
+# Xoa log cu moi lan khoi dong lai
+try { [System.IO.File]::WriteAllText($LogFile, "", [System.Text.Encoding]::UTF8) } catch {}
+
 Write-Log "=== USB Reader khoi dong | ScannerSpeed: ${ScannerSpeedMs}ms | MinLen: $MinBarcodeLength ==="
 Write-Log "File: $ExcelFile | Flush interval: ${FLUSH_INTERVAL_MS}ms"
 
 if (-not (Test-Path $ExcelFile)) {
-    Flush-ToExcel -Path $ExcelFile -Barcodes @() -Scanners @() -Cols @()
+    $initDate = Get-Date -Format "dd-MM-yyyy"
+    Flush-ToExcel -Path $ExcelFile -Barcodes @() -Scanners @() -Cols @() -SheetDate $initDate
     Write-Log "Tao file moi: $ExcelFile"
 }
 
@@ -583,7 +631,8 @@ $timer.Add_Tick({
         $batchBarcodes = $script:pendingBarcodes.ToArray()
         $batchScanners = $script:pendingScanners.ToArray()
         $batchCols     = $script:pendingCols.ToArray()
-        Flush-ToExcel -Path $ExcelFile -Barcodes $batchBarcodes -Scanners $batchScanners -Cols $batchCols
+        $sheetDate     = Get-Date -Format "dd-MM-yyyy"
+        Flush-ToExcel -Path $ExcelFile -Barcodes $batchBarcodes -Scanners $batchScanners -Cols $batchCols -SheetDate $sheetDate
         $script:pendingBarcodes.Clear()
         $script:pendingScanners.Clear()
         $script:pendingCols.Clear()
@@ -599,9 +648,10 @@ $form.Add_FormClosed({
     if ($script:pendingBarcodes.Count -gt 0) {
         try {
             Flush-ToExcel -Path $ExcelFile `
-                -Barcodes $script:pendingBarcodes.ToArray() `
-                -Scanners $script:pendingScanners.ToArray() `
-                -Cols    $script:pendingCols.ToArray()
+                -Barcodes   $script:pendingBarcodes.ToArray() `
+                -Scanners   $script:pendingScanners.ToArray() `
+                -Cols       $script:pendingCols.ToArray() `
+                -SheetDate  (Get-Date -Format "dd-MM-yyyy")
         } catch {}
     }
     if ($null -ne $script:xl) {
