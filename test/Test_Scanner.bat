@@ -2,8 +2,8 @@
 setlocal
 echo === Gia lap may quet ma vach ===
 echo.
-echo [1] Gui barcode vao ngay hom nay (script chinh phai dang chay)
-echo [2] Gia lap qua ngay moi (tu dong restart script)
+echo [1] Gui barcode vao thang hien tai (script chinh phai dang chay)
+echo [2] Gia lap qua thang moi (tu dong restart script)
 echo.
 set /p CHOICE="Chon (1/2): "
 
