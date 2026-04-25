@@ -55,13 +55,13 @@ public class ExcelFinder {
             if (string.Equals((string)Get(sh, "Name"), sheetDate, StringComparison.OrdinalIgnoreCase))
                 return sh;
         }
-        // Chen dung vi tri: moi nhat ben trai (index nho), cu hon ben phai (index lon)
+        // Chen dung vi tri: cu nhat ben trai (index nho), moi nhat ben phai (index lon)
         int    newKey      = ParseMonthKey(sheetDate);
         object insertBefore = null;
         for (int s = 1; s <= cnt; s++) {
             object sh  = Get(sheets, "Item", new object[] { s });
             int    key = ParseMonthKey((string)Get(sh, "Name"));
-            if (key >= 0 && key < newKey) { insertBefore = sh; break; }
+            if (key >= 0 && key > newKey) { insertBefore = sh; break; }
         }
         object mv = System.Reflection.Missing.Value;
         object ws;
@@ -524,7 +524,7 @@ function Find-OrCreateSheet {
     for ($s = 1; $s -le $cnt; $s++) {
         $sh = $Workbook.Sheets.Item($s)
         $k  = & $keyOf $sh.Name
-        if ($k -ge 0 -and $k -lt $newKey) { $insertBefore = $sh; break }
+        if ($k -ge 0 -and $k -gt $newKey) { $insertBefore = $sh; break }
     }
     $mv = [System.Reflection.Missing]::Value
     if ($null -ne $insertBefore) {

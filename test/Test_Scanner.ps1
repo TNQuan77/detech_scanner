@@ -97,7 +97,7 @@ if ($TestDateChange) {
     Send-Barcodes -Codes $Barcodes
 
     Write-Host ""
-    Write-Host "Xong! Mo file Excel kiem tra thu tu sheet (trai->phai): '$nextMonth' | '$thisMonth' | '$lastMonth'"
+    Write-Host "Xong! Mo file Excel kiem tra thu tu sheet (trai->phai): '$lastMonth' | '$thisMonth' | '$nextMonth'"
 
 } elseif ($Date) {
     Write-Host "=== Gia lap scanner (thang: $Date) ==="
