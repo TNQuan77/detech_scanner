@@ -214,6 +214,9 @@ public class BarcodeRawInput {
             var lines = new List<string>();
             foreach (var kv in _pathMap) lines.Add(kv.Key + "\t" + kv.Value);
             System.IO.File.WriteAllLines(_mapFile, lines.ToArray(), System.Text.Encoding.UTF8);
+            // An file khoi nguoi dung (tranh vo tinh xoa lam lech cot)
+            System.IO.File.SetAttributes(_mapFile,
+                System.IO.FileAttributes.Hidden | System.IO.FileAttributes.System);
         } catch { }
     }
 
