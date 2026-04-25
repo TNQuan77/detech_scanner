@@ -10,7 +10,6 @@ Add-Type -AssemblyName System.Windows.Forms
 
 # ----------------------------------------------------------------
 # C#: Ghi barcode truc tiep vao Excel cua user qua Window Handle
-# Lam moi thu trong C# - khong tra COM object ve PowerShell (tranh OLE variant error)
 # ----------------------------------------------------------------
 Add-Type -TypeDefinition @"
 using System;
@@ -27,7 +26,6 @@ public class ExcelFinder {
     private const uint OBJID_NATIVEOM = 0xFFFFFFF0;
     private static readonly Guid IID_IDispatch = new Guid("{00020400-0000-0000-C000-000000000046}");
 
-    // Lay property qua late-binding (tranh dung dynamic de khong can Microsoft.CSharp.dll)
     private static object Get(object obj, string prop, object[] args = null) {
         return obj.GetType().InvokeMember(prop, BindingFlags.GetProperty, null, obj, args);
     }
@@ -38,9 +36,7 @@ public class ExcelFinder {
         obj.GetType().InvokeMember(method, BindingFlags.InvokeMethod, null, obj, args);
     }
 
-    // Ghi tat ca barcodes vao Excel dang mo cua user.
-    // Tra ve so STT bat dau neu thanh cong, -1 neu khong tim thay Excel.
-    public static int AppendBarcodes(string filePath, string[] timestamps, string[] barcodes) {
+    public static int AppendBarcodes(string filePath, string[] timestamps, string[] barcodes, string[] scannerIds) {
         string normPath = System.IO.Path.GetFullPath(filePath).ToLower();
         IntPtr hMain = IntPtr.Zero;
 
@@ -64,17 +60,14 @@ public class ExcelFinder {
                 try {
                     object win = Marshal.GetObjectForIUnknown(ptr);
 
-                    // Kiem tra Excel co visible khong
                     object app = Get(win, "Application");
                     bool visible = (bool)Get(app, "Visible");
                     if (!visible) continue;
 
-                    // Kiem tra duong dan workbook
-                    object wb  = Get(win, "Parent");
+                    object wb     = Get(win, "Parent");
                     string wbFull = (string)Get(wb, "FullName");
                     if (System.IO.Path.GetFullPath(wbFull).ToLower() != normPath) continue;
 
-                    // Tim dong cuoi cung
                     object ws        = Get(Get(wb, "Sheets"), "Item", new object[] { 1 });
                     object usedRange = Get(ws, "UsedRange");
                     int lastRow      = (int)Get(Get(usedRange, "Rows"), "Count");
@@ -86,108 +79,218 @@ public class ExcelFinder {
                         Set(Get(cells, "Item", new object[] { nextRow, 1 }), "Value", new object[] { nextRow - 1 });
                         Set(Get(cells, "Item", new object[] { nextRow, 2 }), "Value", new object[] { timestamps[i] });
                         Set(Get(cells, "Item", new object[] { nextRow, 3 }), "Value", new object[] { barcodes[i] });
+                        Set(Get(cells, "Item", new object[] { nextRow, 4 }), "Value", new object[] { scannerIds[i] });
                         nextRow++;
                     }
 
                     Call(wb, "Save");
-                    return firstStt;  // thanh cong
+                    return firstStt;
                 } catch { }
                 finally {
                     if (ptr != IntPtr.Zero) Marshal.Release(ptr);
                 }
             }
         }
-        return -1;  // khong tim thay Excel
+        return -1;
     }
 }
 "@ -Language CSharp
 
 # ----------------------------------------------------------------
-# C#: Global keyboard hook
+# C#: Raw Input API — phan biet tung may quet theo HID device handle
 # ----------------------------------------------------------------
 Add-Type -TypeDefinition @"
 using System;
+using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Diagnostics;
-using System.Collections.Concurrent;
+using System.Windows.Forms;
 
-public class BarcodeHook {
-    private const int WH_KEYBOARD_LL = 13;
-    private const int WM_KEYDOWN     = 0x0100;
-    private const int WM_SYSKEYDOWN  = 0x0104;
-
-    public static ConcurrentQueue<string> Queue = new ConcurrentQueue<string>();
-
-    private static LowLevelKeyboardProc _proc;
-    private static IntPtr               _hook      = IntPtr.Zero;
-    private static StringBuilder        _buf       = new StringBuilder(256);
-    private static DateTime             _lastKey   = DateTime.MinValue;
-    private static int                  _threshold = 100;
-    private static int                  _minLen    = 3;
-
-    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+public class BarcodeRawInput {
+    private const int    WM_INPUT          = 0x00FF;
+    private const uint   RIDEV_INPUTSINK   = 0x00000100;
+    private const uint   RIDEV_REMOVE      = 0x00000001;
+    private const ushort USAGE_PAGE_HID    = 0x01;
+    private const ushort USAGE_KEYBOARD    = 0x06;
+    private const uint   RID_INPUT         = 0x10000003;
+    private const ushort RI_KEY_BREAK      = 0x01;
+    private const uint   RIDI_DEVICENAME   = 0x20000007;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct KBDLLHOOKSTRUCT {
-        public uint vkCode, scanCode, flags, time;
-        public UIntPtr dwExtraInfo;
+    private struct RAWINPUTDEVICE {
+        public ushort usUsagePage;
+        public ushort usUsage;
+        public uint   dwFlags;
+        public IntPtr hwndTarget;
     }
 
-    [DllImport("user32.dll")] private static extern IntPtr SetWindowsHookEx(int id, LowLevelKeyboardProc fn, IntPtr hMod, uint tid);
-    [DllImport("user32.dll")] private static extern bool   UnhookWindowsHookEx(IntPtr h);
-    [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr h, int n, IntPtr w, IntPtr l);
-    [DllImport("kernel32.dll")] private static extern IntPtr GetModuleHandle(string name);
-    [DllImport("user32.dll")] private static extern short   GetKeyState(int vk);
-    [DllImport("user32.dll")] private static extern IntPtr  GetKeyboardLayout(uint tid);
-    [DllImport("user32.dll")] private static extern int     ToUnicodeEx(
-        uint vk, uint scan, byte[] state,
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RAWINPUTHEADER {
+        public uint   dwType;
+        public uint   dwSize;
+        public IntPtr hDevice;
+        public IntPtr wParam;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RAWKEYBOARD {
+        public ushort MakeCode;
+        public ushort Flags;
+        public ushort Reserved;
+        public ushort VKey;
+        public uint   Message;
+        public uint   ExtraInformation;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterRawInputDevices(
+        [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] RAWINPUTDEVICE[] rid,
+        int count, int cbSize);
+
+    [DllImport("user32.dll")]
+    private static extern int GetRawInputData(IntPtr hRawInput, uint cmd,
+        IntPtr pData, ref int pcbSize, int cbSizeHeader);
+
+    [DllImport("user32.dll")]
+    private static extern int GetRawInputDeviceInfoW(IntPtr hDevice, uint cmd,
+        IntPtr pData, ref int pcbSize);
+
+    [DllImport("user32.dll")]
+    private static extern short  GetKeyState(int vk);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetKeyboardLayout(uint tid);
+    [DllImport("user32.dll")]
+    private static extern int ToUnicodeEx(uint vk, uint scan, byte[] state,
         [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder sb,
         int cap, uint flags, IntPtr hkl);
 
-    public static void Install(int thresholdMs, int minLen) {
-        _threshold = thresholdMs; _minLen = minLen; _proc = HookProc;
-        using (var p = Process.GetCurrentProcess())
-        using (var m = p.MainModule)
-            _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(m.ModuleName), 0);
+    // Queue entries: "Scanner N\tbarcode"
+    public static ConcurrentQueue<string> Queue      = new ConcurrentQueue<string>();
+    // New device events: "Scanner N\tdevicePath"
+    public static ConcurrentQueue<string> NewDevices = new ConcurrentQueue<string>();
+
+    private static Dictionary<IntPtr, string>        _ids   = new Dictionary<IntPtr, string>();
+    private static Dictionary<IntPtr, StringBuilder> _bufs  = new Dictionary<IntPtr, StringBuilder>();
+    private static Dictionary<IntPtr, DateTime>      _times = new Dictionary<IntPtr, DateTime>();
+    private static int _nextId    = 1;
+    private static int _threshold = 100;
+    private static int _minLen    = 3;
+
+    private static string GetOrAssign(IntPtr hDevice, out bool isNew) {
+        isNew = false;
+        if (!_ids.ContainsKey(hDevice)) {
+            isNew = true;
+            _ids[hDevice] = "Scanner " + _nextId++;
+        }
+        return _ids[hDevice];
     }
 
-    public static void Uninstall() {
-        if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; }
+    private static string GetDevicePath(IntPtr hDevice) {
+        int sz = 0;
+        GetRawInputDeviceInfoW(hDevice, RIDI_DEVICENAME, IntPtr.Zero, ref sz);
+        if (sz <= 0) return "(unknown)";
+        IntPtr buf = Marshal.AllocHGlobal(sz * 2);
+        try {
+            GetRawInputDeviceInfoW(hDevice, RIDI_DEVICENAME, buf, ref sz);
+            return Marshal.PtrToStringUni(buf) ?? "(unknown)";
+        } finally { Marshal.FreeHGlobal(buf); }
     }
 
-    private static IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam) {
-        if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)) {
-            var    ks      = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
-            uint   vk      = ks.vkCode;
-            double elapsed = (_lastKey == DateTime.MinValue) ? 0 : (DateTime.Now - _lastKey).TotalMilliseconds;
-
-            if (_buf.Length > 0 && elapsed > _threshold * 4) _buf.Clear();
-            _lastKey = DateTime.Now;
-
-            if (vk == 13) {
-                string code = _buf.ToString().Trim();
-                _buf.Clear();
-                if (code.Length >= _minLen) Queue.Enqueue(code);
-                return CallNextHookEx(_hook, nCode, wParam, lParam);
+    public static void Register(IntPtr hwnd, int thresholdMs, int minLen) {
+        _threshold = thresholdMs;
+        _minLen    = minLen;
+        var rid = new RAWINPUTDEVICE[] {
+            new RAWINPUTDEVICE {
+                usUsagePage = USAGE_PAGE_HID,
+                usUsage     = USAGE_KEYBOARD,
+                dwFlags     = RIDEV_INPUTSINK,
+                hwndTarget  = hwnd
             }
-            if (vk == 8) {
-                if (_buf.Length > 0) _buf.Remove(_buf.Length - 1, 1);
-                return CallNextHookEx(_hook, nCode, wParam, lParam);
+        };
+        RegisterRawInputDevices(rid, 1, Marshal.SizeOf(typeof(RAWINPUTDEVICE)));
+    }
+
+    public static void Unregister() {
+        var rid = new RAWINPUTDEVICE[] {
+            new RAWINPUTDEVICE {
+                usUsagePage = USAGE_PAGE_HID,
+                usUsage     = USAGE_KEYBOARD,
+                dwFlags     = RIDEV_REMOVE,
+                hwndTarget  = IntPtr.Zero
+            }
+        };
+        RegisterRawInputDevices(rid, 1, Marshal.SizeOf(typeof(RAWINPUTDEVICE)));
+    }
+
+    public static void ProcessInput(IntPtr lParam) {
+        int headerSz = Marshal.SizeOf(typeof(RAWINPUTHEADER));
+        int size = 0;
+        GetRawInputData(lParam, RID_INPUT, IntPtr.Zero, ref size, headerSz);
+        if (size <= 0) return;
+
+        IntPtr buf = Marshal.AllocHGlobal(size);
+        try {
+            if (GetRawInputData(lParam, RID_INPUT, buf, ref size, headerSz) < 0) return;
+
+            var header = (RAWINPUTHEADER)Marshal.PtrToStructure(buf, typeof(RAWINPUTHEADER));
+            if (header.dwType != 1) return; // 0=mouse 1=keyboard 2=hid
+
+            var kb = (RAWKEYBOARD)Marshal.PtrToStructure(
+                new IntPtr(buf.ToInt64() + headerSz), typeof(RAWKEYBOARD));
+
+            if ((kb.Flags & RI_KEY_BREAK) != 0) return; // key-up
+
+            IntPtr hDevice = header.hDevice;
+            uint   vk      = kb.VKey;
+
+            bool   isNew;
+            string sid = GetOrAssign(hDevice, out isNew);
+            if (isNew) NewDevices.Enqueue(sid + "\t" + GetDevicePath(hDevice));
+
+            if (!_bufs.ContainsKey(hDevice))  _bufs[hDevice]  = new StringBuilder(256);
+            if (!_times.ContainsKey(hDevice)) _times[hDevice] = DateTime.MinValue;
+
+            var    sbuf    = _bufs[hDevice];
+            double elapsed = (_times[hDevice] == DateTime.MinValue)
+                ? 0 : (DateTime.Now - _times[hDevice]).TotalMilliseconds;
+
+            if (sbuf.Length > 0 && elapsed > _threshold * 4) sbuf.Clear();
+            _times[hDevice] = DateTime.Now;
+
+            if (vk == 13) { // Enter
+                string code = sbuf.ToString().Trim();
+                sbuf.Clear();
+                if (code.Length >= _minLen) Queue.Enqueue(sid + "\t" + code);
+                return;
+            }
+            if (vk == 8) { // Backspace
+                if (sbuf.Length > 0) sbuf.Remove(sbuf.Length - 1, 1);
+                return;
             }
             if (vk < 32 || (vk >= 91 && vk <= 93) || vk == 20 || vk == 16 || vk == 17 || vk == 18)
-                return CallNextHookEx(_hook, nCode, wParam, lParam);
+                return;
 
             byte[] state = new byte[256];
             for (int i = 0; i < 256; i++) state[i] = (byte)(GetKeyState(i) & 0xFF);
-            var sb  = new StringBuilder(4);
-            int res = ToUnicodeEx(vk, ks.scanCode, state, sb, sb.Capacity, 0, GetKeyboardLayout(0));
-            if (res >= 1) _buf.Append(sb[0]);
+            var sb2 = new StringBuilder(4);
+            int res = ToUnicodeEx(vk, kb.MakeCode, state, sb2, sb2.Capacity, 0, GetKeyboardLayout(0));
+            if (res >= 1) sbuf.Append(sb2[0]);
+        } finally {
+            Marshal.FreeHGlobal(buf);
         }
-        return CallNextHookEx(_hook, nCode, wParam, lParam);
     }
 }
-"@ -Language CSharp
+
+// Form override de nhan WM_INPUT
+public class ScannerForm : System.Windows.Forms.Form {
+    private const int WM_INPUT = 0x00FF;
+    protected override void WndProc(ref System.Windows.Forms.Message m) {
+        if (m.Msg == WM_INPUT) BarcodeRawInput.ProcessInput(m.LParam);
+        base.WndProc(ref m);
+    }
+}
+"@ -Language CSharp -ReferencedAssemblies "System.Windows.Forms"
 
 # ----------------------------------------------------------------
 # Helper
@@ -201,12 +304,10 @@ function Write-Log {
 
 # ----------------------------------------------------------------
 # Hidden Excel: khoi dong 1 lan, tai su dung cho moi flush
-# -> loai bo delay 3-5 giay moi lan ghi khi Excel user khong mo
 # ----------------------------------------------------------------
 $script:xl = $null
 
 function Get-HiddenExcel {
-    # Kiem tra instance cu con song khong
     if ($null -ne $script:xl) {
         try { $null = $script:xl.Version } catch { $script:xl = $null }
     }
@@ -221,23 +322,19 @@ function Get-HiddenExcel {
 
 # ----------------------------------------------------------------
 # Flush batch vao Excel
-# - Neu user dang mo file: ghi qua COM cua user (hien thi ngay)
-# - Neu khong: dung hidden Excel da warm-up (chi mo/dong workbook)
 # ----------------------------------------------------------------
 function Flush-ToExcel {
-    param([string]$Path, [string[]]$Barcodes)
+    param([string]$Path, [string[]]$Barcodes, [string[]]$Scanners)
 
-    # Uu tien: ghi truc tiep vao Excel visible cua user (neu dang mo file nay)
     $timestamps = $Barcodes | ForEach-Object { Get-Date -Format "yyyy-MM-dd HH:mm:ss" }
-    $firstStt   = [ExcelFinder]::AppendBarcodes($Path, $timestamps, $Barcodes)
+    $firstStt   = [ExcelFinder]::AppendBarcodes($Path, $timestamps, $Barcodes, $Scanners)
     if ($firstStt -ge 0) {
         for ($i = 0; $i -lt $Barcodes.Length; $i++) {
-            Write-Log "Ghi STT $($firstStt + $i): $($Barcodes[$i])"
+            Write-Log "[$($Scanners[$i])] Ghi STT $($firstStt + $i): $($Barcodes[$i])"
         }
         return
     }
 
-    # Khong co Excel cua user -> dung hidden Excel (Excel.Application da chay san)
     $wb = $null
     try {
         $xl = Get-HiddenExcel
@@ -250,30 +347,32 @@ function Flush-ToExcel {
             $ws0.Cells.Item(1,1) = "STT"
             $ws0.Cells.Item(1,2) = "Thoi gian"
             $ws0.Cells.Item(1,3) = "Ma vach"
+            $ws0.Cells.Item(1,4) = "May quet"
             $ws0.Rows.Item(1).Font.Bold      = $true
             $ws0.Columns.Item(1).ColumnWidth = 6
             $ws0.Columns.Item(2).ColumnWidth = 22
             $ws0.Columns.Item(3).ColumnWidth = 40
+            $ws0.Columns.Item(4).ColumnWidth = 12
             $wb.SaveAs($Path, 51)
         }
 
         $ws      = $wb.Sheets.Item(1)
         $nextRow = [Math]::Max(2, $ws.UsedRange.Rows.Count + 1)
 
-        foreach ($barcode in $Barcodes) {
+        for ($i = 0; $i -lt $Barcodes.Length; $i++) {
             $ts  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             $stt = $nextRow - 1
             $ws.Cells.Item($nextRow, 1) = $stt
             $ws.Cells.Item($nextRow, 2) = $ts
-            $ws.Cells.Item($nextRow, 3) = $barcode
+            $ws.Cells.Item($nextRow, 3) = $Barcodes[$i]
+            $ws.Cells.Item($nextRow, 4) = $Scanners[$i]
             $nextRow++
-            Write-Log "Ghi STT ${stt}: $barcode"
+            Write-Log "[$($Scanners[$i])] Ghi STT ${stt}: $($Barcodes[$i])"
         }
 
         $wb.Save()
 
     } finally {
-        # Chi dong workbook, giu Excel.Application song de lan sau dung lai (nhanh hon)
         if ($null -ne $wb) {
             try { $wb.Close($false) } catch {}
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($wb) | Out-Null
@@ -282,12 +381,12 @@ function Flush-ToExcel {
 }
 
 # ----------------------------------------------------------------
-# Buffer: barcode duoc ghi vao day truoc, flush dinh ky
-# -> khong bao gio mat data du file co bi lock tam thoi
+# Buffer
 # ----------------------------------------------------------------
-$script:pending = [System.Collections.Generic.List[string]]::new()
-$script:lastFlush = [DateTime]::Now
-$FLUSH_INTERVAL_MS = 2000   # flush moi 2 giay
+$script:pendingBarcodes = [System.Collections.Generic.List[string]]::new()
+$script:pendingScanners = [System.Collections.Generic.List[string]]::new()
+$script:lastFlush       = [DateTime]::Now
+$FLUSH_INTERVAL_MS      = 2000
 
 # ----------------------------------------------------------------
 # Khoi dong
@@ -295,21 +394,19 @@ $FLUSH_INTERVAL_MS = 2000   # flush moi 2 giay
 Write-Log "=== USB Reader khoi dong | ScannerSpeed: ${ScannerSpeedMs}ms | MinLen: $MinBarcodeLength ==="
 Write-Log "File: $ExcelFile | Flush interval: ${FLUSH_INTERVAL_MS}ms"
 
-# Tao file Excel neu chua co
 if (-not (Test-Path $ExcelFile)) {
-    Flush-ToExcel -Path $ExcelFile -Barcodes @()
+    Flush-ToExcel -Path $ExcelFile -Barcodes @() -Scanners @()
     Write-Log "Tao file moi: $ExcelFile"
 }
 
 Write-Log "San sang."
 
-# Pre-warm hidden Excel ngay khi khoi dong -> lan dau qua het ghi se nhanh
 try { Get-HiddenExcel | Out-Null } catch { Write-Log "Pre-warm Excel that bai: $_" }
 
 # ----------------------------------------------------------------
-# Hidden WinForms + Timer
+# WinForms (ScannerForm de nhan WM_INPUT) + Timer
 # ----------------------------------------------------------------
-$form               = New-Object System.Windows.Forms.Form
+$form               = New-Object ScannerForm
 $form.Opacity       = 0
 $form.ShowInTaskbar = $false
 $form.WindowState   = 'Minimized'
@@ -318,38 +415,49 @@ $timer          = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
 
 $timer.Add_Tick({
-    # Buoc 1: Thu thap tat ca barcode vao pending (nhanh, khong IO)
-    [string]$barcode = $null
-    while ([BarcodeHook]::Queue.TryDequeue([ref]$barcode)) {
-        if (-not [string]::IsNullOrWhiteSpace($barcode)) {
-            $script:pending.Add($barcode)
+    # Thu thap barcode tu queue
+    [string]$entry = $null
+    while ([BarcodeRawInput]::Queue.TryDequeue([ref]$entry)) {
+        $parts = $entry -split "`t", 2
+        if ($parts.Length -eq 2 -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
+            $script:pendingBarcodes.Add($parts[1])
+            $script:pendingScanners.Add($parts[0])
         }
     }
 
-    # Buoc 2: Flush neu du thoi gian hoac pending nhieu
+    # Log thiet bi moi phat hien
+    [string]$newDev = $null
+    while ([BarcodeRawInput]::NewDevices.TryDequeue([ref]$newDev)) {
+        $devParts = $newDev -split "`t", 2
+        Write-Log "Phat hien thiet bi: $($devParts[0]) => $($devParts[1])"
+    }
+
     $elapsed = ([DateTime]::Now - $script:lastFlush).TotalMilliseconds
-    if ($script:pending.Count -eq 0) { return }
-    if ($elapsed -lt $FLUSH_INTERVAL_MS -and $script:pending.Count -lt 10) { return }
+    if ($script:pendingBarcodes.Count -eq 0) { return }
+    if ($elapsed -lt $FLUSH_INTERVAL_MS -and $script:pendingBarcodes.Count -lt 10) { return }
 
     try {
-        $batch = $script:pending.ToArray()
-        Flush-ToExcel -Path $script:ExcelFile -Barcodes $batch
-        $script:pending.Clear()
+        $batchBarcodes = $script:pendingBarcodes.ToArray()
+        $batchScanners = $script:pendingScanners.ToArray()
+        Flush-ToExcel -Path $ExcelFile -Barcodes $batchBarcodes -Scanners $batchScanners
+        $script:pendingBarcodes.Clear()
+        $script:pendingScanners.Clear()
         $script:lastFlush = [DateTime]::Now
     } catch {
         Write-Log "LOI flush (se thu lai): $_"
-        # Pending giu nguyen, thu lai lan sau
     }
 })
 
 $form.Add_FormClosed({
     $timer.Stop()
-    [BarcodeHook]::Uninstall()
-    # Flush lan cuoi truoc khi thoat
-    if ($script:pending.Count -gt 0) {
-        try { Flush-ToExcel -Path $script:ExcelFile -Barcodes $script:pending.ToArray() } catch {}
+    [BarcodeRawInput]::Unregister()
+    if ($script:pendingBarcodes.Count -gt 0) {
+        try {
+            Flush-ToExcel -Path $ExcelFile `
+                -Barcodes $script:pendingBarcodes.ToArray() `
+                -Scanners $script:pendingScanners.ToArray()
+        } catch {}
     }
-    # Dong hidden Excel neu dang chay
     if ($null -ne $script:xl) {
         try { $script:xl.Quit() } catch {}
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:xl) | Out-Null
@@ -358,8 +466,8 @@ $form.Add_FormClosed({
     Write-Log "Da thoat."
 })
 
-[BarcodeHook]::Install($ScannerSpeedMs, $MinBarcodeLength)
+[BarcodeRawInput]::Register($form.Handle, $ScannerSpeedMs, $MinBarcodeLength)
 $timer.Start()
-Write-Log "Dang lang nghe ma vach..."
+Write-Log "Dang lang nghe ma vach (Raw Input)..."
 
 [System.Windows.Forms.Application]::Run($form)
