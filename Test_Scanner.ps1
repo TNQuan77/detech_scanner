@@ -29,6 +29,8 @@ function Send-Barcodes {
     }
 }
 
+$logFile = Join-Path $scriptDir "USB_Reader.log"
+
 function Stop-MainScript {
     Get-Process powershell -ErrorAction SilentlyContinue |
         Where-Object { $_.MainWindowTitle -eq "" } |
@@ -36,16 +38,30 @@ function Stop-MainScript {
             $cmdline = (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
             if ($cmdline -like "*USB_Reader_HID*") { $_ | Stop-Process -Force }
         }
-    Start-Sleep -Milliseconds 1500
+    Start-Sleep -Milliseconds 1000
 }
 
 function Start-MainScript {
     param([string]$SimDate = "")
-    $args = @("-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-              "-File", $mainScript)
-    if ($SimDate) { $args += @("-SimulateDate", $SimDate) }
-    Start-Process powershell.exe -ArgumentList $args
-    Start-Sleep -Milliseconds 3000   # cho script khoi dong
+    $psArgs = @("-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                "-File", $mainScript)
+    if ($SimDate) { $psArgs += @("-SimulateDate", $SimDate) }
+    Start-Process powershell.exe -ArgumentList $psArgs
+}
+
+function Wait-ForReady {
+    param([int]$TimeoutSec = 30)
+    Write-Host "  Dang cho script san sang..." -NoNewline
+    $deadline = [DateTime]::Now.AddSeconds($TimeoutSec)
+    while ([DateTime]::Now -lt $deadline) {
+        if (Test-Path $logFile) {
+            $lines = Get-Content $logFile -ErrorAction SilentlyContinue
+            if ($lines -match "lang nghe") { Write-Host " OK"; return }
+        }
+        Write-Host "." -NoNewline
+        Start-Sleep -Milliseconds 500
+    }
+    Write-Host " TIMEOUT"
 }
 
 # ----------------------------------------------------------------
@@ -57,12 +73,14 @@ if ($TestDateChange) {
     Write-Host "Buoc 1: Gia lap ngay hom qua ($yesterday)"
     Stop-MainScript
     Start-MainScript -SimDate $yesterday
+    Wait-ForReady
     Send-Barcodes -Codes $Barcodes
 
     Write-Host ""
     Write-Host "Buoc 2: Gia lap ngay hom nay ($today)"
     Stop-MainScript
     Start-MainScript -SimDate $today
+    Wait-ForReady
     Send-Barcodes -Codes $Barcodes
 
     Write-Host ""
@@ -72,6 +90,7 @@ if ($TestDateChange) {
     Write-Host "=== Gia lap scanner (ngay: $Date) ==="
     Stop-MainScript
     Start-MainScript -SimDate $Date
+    Wait-ForReady
     Send-Barcodes -Codes $Barcodes
     Write-Host "Xong!"
 
