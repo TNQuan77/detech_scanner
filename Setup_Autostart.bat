@@ -65,7 +65,7 @@ echo.
 set /p RUN_NOW="Chay USB Reader ngay bay gio khong? (y/n): "
 if /i "%RUN_NOW%"=="y" (
     start "" /b cmd.exe /c "%BAT_FILE%"
-    echo [OK] Da chay ngam. Kiem tra log tai: C:\USB_Reader.log
+    echo [OK] Da chay ngam. Kiem tra log tai: %~dp0USB_Reader.log
 )
 
 echo.
