@@ -36,7 +36,8 @@ public class ExcelFinder {
         obj.GetType().InvokeMember(method, BindingFlags.InvokeMethod, null, obj, args);
     }
 
-    public static int AppendBarcodes(string filePath, string[] timestamps, string[] barcodes, string[] scannerIds) {
+    // scannerNames: ten hien thi (VD "T27H"), colIndices: vi tri cot (1-based -> Excel col 3,4,5,...)
+    public static int AppendBarcodes(string filePath, string[] timestamps, string[] barcodes, string[] scannerNames, int[] colIndices) {
         string normPath = System.IO.Path.GetFullPath(filePath).ToLower();
         IntPtr hMain = IntPtr.Zero;
 
@@ -76,19 +77,14 @@ public class ExcelFinder {
                     object cells     = Get(ws, "Cells");
 
                     for (int i = 0; i < barcodes.Length; i++) {
-                        // "Scanner N" -> cot 2+N (Scanner 1 -> col 3, Scanner 2 -> col 4, ...)
-                        int scanNum;
-                        string[] sp = scannerIds[i].Split(' ');
-                        if (sp.Length < 2 || !int.TryParse(sp[sp.Length - 1], out scanNum) || scanNum < 1)
-                            scanNum = 1;
-                        int scanCol = 2 + scanNum;
+                        int scanCol = 2 + colIndices[i];
 
                         // Them header neu chua co
                         object hdrCell = Get(cells, "Item", new object[] { 1, scanCol });
                         object hdrVal  = null;
                         try { hdrVal = Get(hdrCell, "Value"); } catch {}
                         if (hdrVal == null || string.IsNullOrWhiteSpace(hdrVal.ToString()))
-                            Set(hdrCell, "Value", new object[] { scannerIds[i] });
+                            Set(hdrCell, "Value", new object[] { scannerNames[i] });
 
                         Set(Get(cells, "Item", new object[] { nextRow, 1 }), "Value", new object[] { nextRow - 1 });
                         Set(Get(cells, "Item", new object[] { nextRow, 2 }), "Value", new object[] { timestamps[i] });
@@ -178,33 +174,78 @@ public class BarcodeRawInput {
         [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder sb,
         int cap, uint flags, IntPtr hkl);
 
-    // Queue entries: "Scanner N\tbarcode"
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateFile(string lpFileName, uint dwDesiredAccess,
+        uint dwShareMode, IntPtr lpSec, uint dwCreationDisp, uint dwFlags, IntPtr hTemplate);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr h);
+    [DllImport("hid.dll", CharSet = CharSet.Unicode)]
+    private static extern bool HidD_GetProductString(IntPtr hDev, [Out] char[] buf, uint len);
+
+    private static readonly IntPtr INVALID_HANDLE = new IntPtr(-1);
+    private const uint FILE_SHARE_RW = 0x00000001 | 0x00000002;
+    private const uint OPEN_EXISTING = 3;
+
+    // Queue entries: "displayName|colIdx\tbarcode"
     public static ConcurrentQueue<string> Queue      = new ConcurrentQueue<string>();
-    // New device events: "Scanner N\tdevicePath"
+    // New device events: "displayName\tdevicePath"
     public static ConcurrentQueue<string> NewDevices = new ConcurrentQueue<string>();
 
-    private static Dictionary<IntPtr, string>        _ids      = new Dictionary<IntPtr, string>();
-    private static Dictionary<IntPtr, StringBuilder> _bufs     = new Dictionary<IntPtr, StringBuilder>();
-    private static Dictionary<IntPtr, DateTime>      _times    = new Dictionary<IntPtr, DateTime>();
-    private static Dictionary<string, string>        _pathMap  = new Dictionary<string, string>(); // HID path -> "Scanner N"
-    private static string _mapFile  = "";
-    private static int    _nextId   = 1;
-    private static int    _threshold = 100;
-    private static int    _minLen    = 3;
+    private static Dictionary<IntPtr, string>        _ids         = new Dictionary<IntPtr, string>();
+    private static Dictionary<IntPtr, StringBuilder> _bufs        = new Dictionary<IntPtr, StringBuilder>();
+    private static Dictionary<IntPtr, DateTime>      _times       = new Dictionary<IntPtr, DateTime>();
+    private static Dictionary<string, string>        _pathToName  = new Dictionary<string, string>(); // HID path -> display name
+    private static Dictionary<string, int>           _pathToCol   = new Dictionary<string, int>();    // HID path -> col index
+    private static string _mapFile    = "";
+    private static int    _nextColIdx = 1;
+    private static int    _threshold  = 100;
+    private static int    _minLen     = 3;
 
-    // Load mapping da luu tu lan truoc (dam bao cung thiet bi = cung cot sau khi khoi dong lai)
+    private static string GetFriendlyName(string devicePath) {
+        try {
+            IntPtr hFile = CreateFile(devicePath, 0, FILE_SHARE_RW, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+            if (hFile == INVALID_HANDLE) return null;
+            try {
+                char[] buf = new char[256];
+                if (HidD_GetProductString(hFile, buf, (uint)(buf.Length * 2))) {
+                    string name = new string(buf).TrimEnd('\0').Trim();
+                    if (!string.IsNullOrEmpty(name)) return name;
+                }
+            } finally { CloseHandle(hFile); }
+        } catch { }
+        return null;
+    }
+
+    private static bool IsNameTaken(string name) {
+        foreach (var v in _pathToName.Values)
+            if (v == name) return true;
+        return false;
+    }
+
+    private static string EnsureUnique(string baseName) {
+        if (!IsNameTaken(baseName)) return baseName;
+        int n = 2;
+        while (IsNameTaken(baseName + " (" + n + ")")) n++;
+        return baseName + " (" + n + ")";
+    }
+
     public static void LoadMap(string mapFilePath) {
         _mapFile = mapFilePath;
         if (!System.IO.File.Exists(mapFilePath)) return;
         foreach (string line in System.IO.File.ReadAllLines(mapFilePath, System.Text.Encoding.UTF8)) {
-            string[] parts = line.Split('\t');
-            if (parts.Length != 2) continue;
-            _pathMap[parts[0]] = parts[1];
-            // Dam bao _nextId luon lon hon tat ca so da dung
-            int n;
-            string[] np = parts[1].Split(' ');
-            if (np.Length >= 2 && int.TryParse(np[np.Length - 1], out n) && n >= _nextId)
-                _nextId = n + 1;
+            string[] p = line.Split('\t');
+            if (p.Length < 2) continue;
+            string path = p[0], name = p[1];
+            int colIdx = 1;
+            if (p.Length >= 3) {
+                int.TryParse(p[2], out colIdx);
+            } else {
+                // Backward compat: old format "path\tScanner N" -> extract N as colIdx
+                string[] np = name.Split(' ');
+                if (np.Length >= 2) int.TryParse(np[np.Length - 1], out colIdx);
+            }
+            _pathToName[path] = name;
+            _pathToCol[path]  = colIdx;
+            if (colIdx >= _nextColIdx) _nextColIdx = colIdx + 1;
         }
     }
 
@@ -212,32 +253,39 @@ public class BarcodeRawInput {
         if (string.IsNullOrEmpty(_mapFile)) return;
         try {
             var lines = new List<string>();
-            foreach (var kv in _pathMap) lines.Add(kv.Key + "\t" + kv.Value);
+            foreach (var kv in _pathToName)
+                lines.Add(kv.Key + "\t" + kv.Value + "\t" + _pathToCol[kv.Key]);
             System.IO.File.WriteAllLines(_mapFile, lines.ToArray(), System.Text.Encoding.UTF8);
-            // An file khoi nguoi dung (tranh vo tinh xoa lam lech cot)
             System.IO.File.SetAttributes(_mapFile,
                 System.IO.FileAttributes.Hidden | System.IO.FileAttributes.System);
         } catch { }
     }
 
+    // Tra ve "displayName|colIdx" de ghi vao queue
     private static string GetOrAssign(IntPtr hDevice, out bool isNew) {
         isNew = false;
         if (_ids.ContainsKey(hDevice)) return _ids[hDevice];
 
         string path = GetDevicePath(hDevice);
         string name;
-        if (_pathMap.ContainsKey(path)) {
-            // Thiet bi da biet -> dung lai ten cu, giu nguyen cot
-            name = _pathMap[path];
+        int    colIdx;
+
+        if (_pathToName.ContainsKey(path)) {
+            name   = _pathToName[path];
+            colIdx = _pathToCol[path];
         } else {
-            // Scanner moi chua gap lan nao
             isNew = true;
-            name = "Scanner " + _nextId++;
-            _pathMap[path] = name;
+            string friendly = GetFriendlyName(path);
+            name   = EnsureUnique(string.IsNullOrEmpty(friendly) ? "Scanner " + _nextColIdx : friendly);
+            colIdx = _nextColIdx++;
+            _pathToName[path] = name;
+            _pathToCol[path]  = colIdx;
             SaveMap();
         }
-        _ids[hDevice] = name;
-        return name;
+
+        string encoded = name + "|" + colIdx;
+        _ids[hDevice] = encoded;
+        return encoded;
     }
 
     private static string GetDevicePath(IntPtr hDevice) {
@@ -315,9 +363,12 @@ public class BarcodeRawInput {
                 // -> keyboard thuong khong bao gio duoc dang ky
                 if (code.Length >= _minLen) {
                     bool   isNew;
-                    string sid = GetOrAssign(hDevice, out isNew);
-                    if (isNew) NewDevices.Enqueue(sid + "\t" + GetDevicePath(hDevice));
-                    Queue.Enqueue(sid + "\t" + code);
+                    string encoded = GetOrAssign(hDevice, out isNew); // "name|colIdx"
+                    if (isNew) {
+                        string displayName = encoded.Split('|')[0];
+                        NewDevices.Enqueue(displayName + "\t" + GetDevicePath(hDevice));
+                    }
+                    Queue.Enqueue(encoded + "\t" + code); // "name|colIdx\tbarcode"
                 }
                 return;
             }
@@ -389,10 +440,10 @@ function Get-HiddenExcel {
 # Flush batch vao Excel
 # ----------------------------------------------------------------
 function Flush-ToExcel {
-    param([string]$Path, [string[]]$Barcodes, [string[]]$Scanners)
+    param([string]$Path, [string[]]$Barcodes, [string[]]$Scanners, [int[]]$Cols)
 
     $timestamps = $Barcodes | ForEach-Object { Get-Date -Format "yyyy-MM-dd HH:mm:ss" }
-    $firstStt   = [ExcelFinder]::AppendBarcodes($Path, $timestamps, $Barcodes, $Scanners)
+    $firstStt   = [ExcelFinder]::AppendBarcodes($Path, $timestamps, $Barcodes, $Scanners, $Cols)
     if ($firstStt -ge 0) {
         for ($i = 0; $i -lt $Barcodes.Length; $i++) {
             Write-Log "[$($Scanners[$i])] Ghi STT $($firstStt + $i): $($Barcodes[$i])"
@@ -421,22 +472,18 @@ function Flush-ToExcel {
         $nextRow = [Math]::Max(2, $ws.UsedRange.Rows.Count + 1)
 
         for ($i = 0; $i -lt $Barcodes.Length; $i++) {
-            # "Scanner N" -> cot 2+N
-            $scanNum = [int]($Scanners[$i] -replace '[^\d]', '')
-            if ($scanNum -lt 1) { $scanNum = 1 }
-            $scanCol = 2 + $scanNum
+            $scanCol = 2 + $Cols[$i]
 
-            # Them header neu chua co
             if ([string]::IsNullOrWhiteSpace($ws.Cells.Item(1, $scanCol).Value2)) {
-                $ws.Cells.Item(1, $scanCol)             = $Scanners[$i]
-                $ws.Columns.Item($scanCol).ColumnWidth  = 40
-                $ws.Cells.Item(1, $scanCol).Font.Bold   = $true
+                $ws.Cells.Item(1, $scanCol)            = $Scanners[$i]
+                $ws.Columns.Item($scanCol).ColumnWidth = 40
+                $ws.Cells.Item(1, $scanCol).Font.Bold  = $true
             }
 
             $ts  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             $stt = $nextRow - 1
-            $ws.Cells.Item($nextRow, 1)       = $stt
-            $ws.Cells.Item($nextRow, 2)       = $ts
+            $ws.Cells.Item($nextRow, 1)        = $stt
+            $ws.Cells.Item($nextRow, 2)        = $ts
             $ws.Cells.Item($nextRow, $scanCol) = $Barcodes[$i]
             $nextRow++
             Write-Log "[$($Scanners[$i])] Ghi STT ${stt}: $($Barcodes[$i])"
@@ -457,6 +504,7 @@ function Flush-ToExcel {
 # ----------------------------------------------------------------
 $script:pendingBarcodes = [System.Collections.Generic.List[string]]::new()
 $script:pendingScanners = [System.Collections.Generic.List[string]]::new()
+$script:pendingCols     = [System.Collections.Generic.List[int]]::new()
 $script:lastFlush       = [DateTime]::Now
 $FLUSH_INTERVAL_MS      = 2000
 
@@ -467,7 +515,7 @@ Write-Log "=== USB Reader khoi dong | ScannerSpeed: ${ScannerSpeedMs}ms | MinLen
 Write-Log "File: $ExcelFile | Flush interval: ${FLUSH_INTERVAL_MS}ms"
 
 if (-not (Test-Path $ExcelFile)) {
-    Flush-ToExcel -Path $ExcelFile -Barcodes @() -Scanners @()
+    Flush-ToExcel -Path $ExcelFile -Barcodes @() -Scanners @() -Cols @()
     Write-Log "Tao file moi: $ExcelFile"
 }
 
@@ -487,14 +535,20 @@ $timer          = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
 
 $timer.Add_Tick({
-    # Thu thap barcode tu queue
+    # Thu thap barcode tu queue (format: "name|colIdx\tbarcode")
     [string]$entry = $null
     while ([BarcodeRawInput]::Queue.TryDequeue([ref]$entry)) {
-        $parts = $entry -split "`t", 2
-        if ($parts.Length -eq 2 -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
-            $script:pendingBarcodes.Add($parts[1])
-            $script:pendingScanners.Add($parts[0])
-        }
+        $tabIdx = $entry.IndexOf("`t")
+        if ($tabIdx -lt 0) { continue }
+        $meta    = $entry.Substring(0, $tabIdx)   # "name|colIdx"
+        $barcode = $entry.Substring($tabIdx + 1)
+        $pipeIdx = $meta.LastIndexOf('|')
+        if ($pipeIdx -lt 0 -or [string]::IsNullOrWhiteSpace($barcode)) { continue }
+        $displayName = $meta.Substring(0, $pipeIdx)
+        $colIdx      = [int]$meta.Substring($pipeIdx + 1)
+        $script:pendingBarcodes.Add($barcode)
+        $script:pendingScanners.Add($displayName)
+        $script:pendingCols.Add($colIdx)
     }
 
     # Log thiet bi moi phat hien
@@ -511,9 +565,11 @@ $timer.Add_Tick({
     try {
         $batchBarcodes = $script:pendingBarcodes.ToArray()
         $batchScanners = $script:pendingScanners.ToArray()
-        Flush-ToExcel -Path $ExcelFile -Barcodes $batchBarcodes -Scanners $batchScanners
+        $batchCols     = $script:pendingCols.ToArray()
+        Flush-ToExcel -Path $ExcelFile -Barcodes $batchBarcodes -Scanners $batchScanners -Cols $batchCols
         $script:pendingBarcodes.Clear()
         $script:pendingScanners.Clear()
+        $script:pendingCols.Clear()
         $script:lastFlush = [DateTime]::Now
     } catch {
         Write-Log "LOI flush (se thu lai): $_"
@@ -527,7 +583,8 @@ $form.Add_FormClosed({
         try {
             Flush-ToExcel -Path $ExcelFile `
                 -Barcodes $script:pendingBarcodes.ToArray() `
-                -Scanners $script:pendingScanners.ToArray()
+                -Scanners $script:pendingScanners.ToArray() `
+                -Cols    $script:pendingCols.ToArray()
         } catch {}
     }
     if ($null -ne $script:xl) {
