@@ -255,7 +255,14 @@ public class BarcodeRawInput {
             var lines = new List<string>();
             foreach (var kv in _pathToName)
                 lines.Add(kv.Key + "\t" + kv.Value + "\t" + _pathToCol[kv.Key]);
-            System.IO.File.WriteAllLines(_mapFile, lines.ToArray(), System.Text.Encoding.UTF8);
+            // Dung FileShare.ReadWrite de tranh loi khi file dang duoc mo boi chuong trinh khac
+            using (var fs = new System.IO.FileStream(_mapFile,
+                System.IO.FileMode.Create,
+                System.IO.FileAccess.Write,
+                System.IO.FileShare.ReadWrite))
+            using (var sw = new System.IO.StreamWriter(fs, System.Text.Encoding.UTF8)) {
+                foreach (var line in lines) sw.WriteLine(line);
+            }
             System.IO.File.SetAttributes(_mapFile,
                 System.IO.FileAttributes.Hidden | System.IO.FileAttributes.System);
         } catch { }
