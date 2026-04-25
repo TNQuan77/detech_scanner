@@ -3,7 +3,8 @@ param(
     [string]$ExcelFile     = "$PSScriptRoot\thoi_gian_dong_hang.xlsx",
     [string]$LogFile       = "$PSScriptRoot\USB_Reader.log",
     [int]$ScannerSpeedMs   = 100,
-    [int]$MinBarcodeLength = 3
+    [int]$MinBarcodeLength = 3,
+    [string]$SimulateDate  = ""   # Override ngay de test, VD: "24-04-2026"
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -441,6 +442,11 @@ public class ScannerForm : System.Windows.Forms.Form {
 # ----------------------------------------------------------------
 # Helper
 # ----------------------------------------------------------------
+function Get-SheetDate {
+    if ($SimulateDate) { return $SimulateDate }
+    return (Get-Date -Format "dd-MM-yyyy")
+}
+
 function Write-Log {
     param([string]$msg)
     $line = "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] $msg"
@@ -573,8 +579,7 @@ Write-Log "=== USB Reader khoi dong | ScannerSpeed: ${ScannerSpeedMs}ms | MinLen
 Write-Log "File: $ExcelFile | Flush interval: ${FLUSH_INTERVAL_MS}ms"
 
 if (-not (Test-Path $ExcelFile)) {
-    $initDate = Get-Date -Format "dd-MM-yyyy"
-    Flush-ToExcel -Path $ExcelFile -Barcodes @() -Scanners @() -Cols @() -SheetDate $initDate
+    Flush-ToExcel -Path $ExcelFile -Barcodes @() -Scanners @() -Cols @() -SheetDate (Get-SheetDate)
     Write-Log "Tao file moi: $ExcelFile"
 }
 
@@ -631,8 +636,7 @@ $timer.Add_Tick({
         $batchBarcodes = $script:pendingBarcodes.ToArray()
         $batchScanners = $script:pendingScanners.ToArray()
         $batchCols     = $script:pendingCols.ToArray()
-        $sheetDate     = Get-Date -Format "dd-MM-yyyy"
-        Flush-ToExcel -Path $ExcelFile -Barcodes $batchBarcodes -Scanners $batchScanners -Cols $batchCols -SheetDate $sheetDate
+        Flush-ToExcel -Path $ExcelFile -Barcodes $batchBarcodes -Scanners $batchScanners -Cols $batchCols -SheetDate (Get-SheetDate)
         $script:pendingBarcodes.Clear()
         $script:pendingScanners.Clear()
         $script:pendingCols.Clear()
@@ -651,7 +655,7 @@ $form.Add_FormClosed({
                 -Barcodes   $script:pendingBarcodes.ToArray() `
                 -Scanners   $script:pendingScanners.ToArray() `
                 -Cols       $script:pendingCols.ToArray() `
-                -SheetDate  (Get-Date -Format "dd-MM-yyyy")
+                -SheetDate  (Get-SheetDate)
         } catch {}
     }
     if ($null -ne $script:xl) {
