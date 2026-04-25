@@ -15,7 +15,7 @@ if %errorLevel% neq 0 (
 )
 
 set TASK_NAME=USB_Barcode_Reader
-set BAT_FILE=%~dp0USB_Reader_HID.bat
+set BAT_FILE=%~dp0src\USB_Reader_HID.bat
 
 if not exist "%BAT_FILE%" (
     echo [LOI] Khong tim thay: %BAT_FILE%
@@ -65,7 +65,7 @@ echo.
 set /p RUN_NOW="Chay USB Reader ngay bay gio khong? (y/n): "
 if /i "%RUN_NOW%"=="y" (
     start "" /b cmd.exe /c "%BAT_FILE%"
-    echo [OK] Da chay ngam. Kiem tra log tai: %~dp0USB_Reader.log
+    echo [OK] Da chay ngam. Kiem tra log tai: %~dp0src\USB_Reader.log
 )
 
 echo.
