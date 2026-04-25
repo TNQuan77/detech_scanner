@@ -2,9 +2,9 @@
 # Co the gia lap thay doi ngay de test tao sheet moi
 #
 # Cach dung:
-#   .\Test_Scanner.ps1                          -> gui barcode vao ngay hom nay
-#   .\Test_Scanner.ps1 -Date "23-04-2026"       -> gui barcode vao ngay cu the
-#   .\Test_Scanner.ps1 -TestDateChange          -> gia lap qua ngay (hom qua -> hom nay)
+#   .\Test_Scanner.ps1                          -> gui barcode vao thang hien tai
+#   .\Test_Scanner.ps1 -Date "04-2026"          -> gui barcode vao thang cu the
+#   .\Test_Scanner.ps1 -TestDateChange          -> gia lap qua thang (thang truoc -> thang nay)
 
 param(
     [string[]]$Barcodes       = @("BARCODE001", "TEST123456", "9876543210987"),
@@ -68,29 +68,29 @@ function Wait-ForReady {
 
 # ----------------------------------------------------------------
 if ($TestDateChange) {
-    $yesterday = (Get-Date).AddDays(-1).ToString("dd-MM-yyyy")
-    $today     = Get-Date -Format "dd-MM-yyyy"
+    $lastMonth = (Get-Date).AddMonths(-1).ToString("MM-yyyy")
+    $thisMonth = Get-Date -Format "MM-yyyy"
 
-    Write-Host "=== Test thay doi ngay ==="
-    Write-Host "Buoc 1: Gia lap ngay hom qua ($yesterday)"
+    Write-Host "=== Test thay doi thang ==="
+    Write-Host "Buoc 1: Gia lap thang truoc ($lastMonth)"
     Stop-MainScript
-    Start-MainScript -SimDate $yesterday
+    Start-MainScript -SimDate $lastMonth
     Wait-ForReady
     Send-Barcodes -Codes $Barcodes
     Start-Sleep -Milliseconds 3000   # cho timer flush Excel (2s) kip chay truoc khi kill
 
     Write-Host ""
-    Write-Host "Buoc 2: Gia lap ngay hom nay ($today)"
+    Write-Host "Buoc 2: Gia lap thang nay ($thisMonth)"
     Stop-MainScript
-    Start-MainScript -SimDate $today
+    Start-MainScript -SimDate $thisMonth
     Wait-ForReady
     Send-Barcodes -Codes $Barcodes
 
     Write-Host ""
-    Write-Host "Xong! Mo file Excel kiem tra co 2 sheet: '$yesterday' va '$today'"
+    Write-Host "Xong! Mo file Excel kiem tra co 2 sheet: '$lastMonth' va '$thisMonth'"
 
 } elseif ($Date) {
-    Write-Host "=== Gia lap scanner (ngay: $Date) ==="
+    Write-Host "=== Gia lap scanner (thang: $Date) ==="
     Stop-MainScript
     Start-MainScript -SimDate $Date
     Wait-ForReady
@@ -98,7 +98,7 @@ if ($TestDateChange) {
     Write-Host "Xong!"
 
 } else {
-    Write-Host "=== Gia lap scanner (ngay hom nay) ==="
+    Write-Host "=== Gia lap scanner (thang hien tai) ==="
     Write-Host "(Script chinh phai dang chay truoc)"
     Send-Barcodes -Codes $Barcodes
     Write-Host "Xong! Kiem tra file Excel va log."

@@ -4,7 +4,7 @@ param(
     [string]$LogFile       = "$PSScriptRoot\USB_Reader.log",
     [int]$ScannerSpeedMs   = 100,
     [int]$MinBarcodeLength = 3,
-    [string]$SimulateDate  = ""   # Override ngay de test, VD: "24-04-2026"
+    [string]$SimulateDate  = ""   # Override thang de test, VD: "04-2026"
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -63,7 +63,7 @@ public class ExcelFinder {
     }
 
     // scannerNames: ten hien thi (VD "T27H"), colIndices: vi tri cot (1-based -> Excel col 3,4,5,...)
-    // sheetDate: ten sheet theo ngay (VD "25-04-2026")
+    // sheetDate: ten sheet theo thang (VD "04-2026")
     public static int AppendBarcodes(string filePath, string[] timestamps, string[] barcodes,
                                      string[] scannerNames, int[] colIndices, string sheetDate) {
         string normPath = System.IO.Path.GetFullPath(filePath).ToLower();
@@ -444,7 +444,7 @@ public class ScannerForm : System.Windows.Forms.Form {
 # ----------------------------------------------------------------
 function Get-SheetDate {
     if ($SimulateDate) { return $SimulateDate }
-    return (Get-Date -Format "dd-MM-yyyy")
+    return (Get-Date -Format "MM-yyyy")
 }
 
 function Write-Log {
