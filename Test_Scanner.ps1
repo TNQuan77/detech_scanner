@@ -43,6 +43,8 @@ function Stop-MainScript {
 
 function Start-MainScript {
     param([string]$SimDate = "")
+    # Xoa log truoc khi start de Wait-ForReady khong bi lua boi log cu
+    try { [System.IO.File]::WriteAllText($logFile, "", [System.Text.Encoding]::UTF8) } catch {}
     $psArgs = @("-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
                 "-File", $mainScript)
     if ($SimDate) { $psArgs += @("-SimulateDate", $SimDate) }
