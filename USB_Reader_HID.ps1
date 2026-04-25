@@ -76,10 +76,23 @@ public class ExcelFinder {
                     object cells     = Get(ws, "Cells");
 
                     for (int i = 0; i < barcodes.Length; i++) {
+                        // "Scanner N" -> cot 2+N (Scanner 1 -> col 3, Scanner 2 -> col 4, ...)
+                        int scanNum;
+                        string[] sp = scannerIds[i].Split(' ');
+                        if (sp.Length < 2 || !int.TryParse(sp[sp.Length - 1], out scanNum) || scanNum < 1)
+                            scanNum = 1;
+                        int scanCol = 2 + scanNum;
+
+                        // Them header neu chua co
+                        object hdrCell = Get(cells, "Item", new object[] { 1, scanCol });
+                        object hdrVal  = null;
+                        try { hdrVal = Get(hdrCell, "Value"); } catch {}
+                        if (hdrVal == null || string.IsNullOrWhiteSpace(hdrVal.ToString()))
+                            Set(hdrCell, "Value", new object[] { scannerIds[i] });
+
                         Set(Get(cells, "Item", new object[] { nextRow, 1 }), "Value", new object[] { nextRow - 1 });
                         Set(Get(cells, "Item", new object[] { nextRow, 2 }), "Value", new object[] { timestamps[i] });
-                        Set(Get(cells, "Item", new object[] { nextRow, 3 }), "Value", new object[] { barcodes[i] });
-                        Set(Get(cells, "Item", new object[] { nextRow, 4 }), "Value", new object[] { scannerIds[i] });
+                        Set(Get(cells, "Item", new object[] { nextRow, scanCol }), "Value", new object[] { barcodes[i] });
                         nextRow++;
                     }
 
@@ -346,13 +359,9 @@ function Flush-ToExcel {
             $ws0 = $wb.Sheets.Item(1)
             $ws0.Cells.Item(1,1) = "STT"
             $ws0.Cells.Item(1,2) = "Thoi gian"
-            $ws0.Cells.Item(1,3) = "Ma vach"
-            $ws0.Cells.Item(1,4) = "May quet"
             $ws0.Rows.Item(1).Font.Bold      = $true
             $ws0.Columns.Item(1).ColumnWidth = 6
             $ws0.Columns.Item(2).ColumnWidth = 22
-            $ws0.Columns.Item(3).ColumnWidth = 40
-            $ws0.Columns.Item(4).ColumnWidth = 12
             $wb.SaveAs($Path, 51)
         }
 
@@ -360,12 +369,23 @@ function Flush-ToExcel {
         $nextRow = [Math]::Max(2, $ws.UsedRange.Rows.Count + 1)
 
         for ($i = 0; $i -lt $Barcodes.Length; $i++) {
+            # "Scanner N" -> cot 2+N
+            $scanNum = [int]($Scanners[$i] -replace '[^\d]', '')
+            if ($scanNum -lt 1) { $scanNum = 1 }
+            $scanCol = 2 + $scanNum
+
+            # Them header neu chua co
+            if ([string]::IsNullOrWhiteSpace($ws.Cells.Item(1, $scanCol).Value2)) {
+                $ws.Cells.Item(1, $scanCol)             = $Scanners[$i]
+                $ws.Columns.Item($scanCol).ColumnWidth  = 40
+                $ws.Cells.Item(1, $scanCol).Font.Bold   = $true
+            }
+
             $ts  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             $stt = $nextRow - 1
-            $ws.Cells.Item($nextRow, 1) = $stt
-            $ws.Cells.Item($nextRow, 2) = $ts
-            $ws.Cells.Item($nextRow, 3) = $Barcodes[$i]
-            $ws.Cells.Item($nextRow, 4) = $Scanners[$i]
+            $ws.Cells.Item($nextRow, 1)       = $stt
+            $ws.Cells.Item($nextRow, 2)       = $ts
+            $ws.Cells.Item($nextRow, $scanCol) = $Barcodes[$i]
             $nextRow++
             Write-Log "[$($Scanners[$i])] Ghi STT ${stt}: $($Barcodes[$i])"
         }
