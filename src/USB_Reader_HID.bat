@@ -13,8 +13,7 @@ set LOG_FILE=%~dp0USB_Reader.log
 
 :: Nguong toc do (ms): phim den trong vong bao nhieu ms = may quet (khong phai nguoi gõ)
 :: Giam xuong neu bi bat nham phim ban phim, tang len neu bo qua ma vach
-@REM set SCANNER_SPEED_MS=50
-set SCANNER_SPEED_MS=100
+set SCANNER_SPEED_MS=30
 
 :: Do dai ma vach toi thieu (bo qua cac phim le / ngan hon)
 set MIN_BARCODE_LEN=3

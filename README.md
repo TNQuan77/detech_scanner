@@ -47,17 +47,18 @@ set MIN_BARCODE_LEN=3       :: Độ dài mã vạch tối thiểu
 
 1. Chuột phải vào `Setup_Autostart.bat`
 2. Chọn **"Run as administrator"**
-3. Khi hỏi *"Chạy ngay bây giờ không?"* → nhập `y` để test luôn
+3. Khi hỏi *"Chạy ngay bây giờ không?"* → nhập `y` để chạy luôn
+
+Script sẽ chạy **ẩn hoàn toàn** (không có cửa sổ) mỗi khi đăng nhập Windows.
 
 ### Bước 3 — Kiểm tra hoạt động
 
-Quét 1 mã vạch bất kỳ, sau đó mở:
+Cắm scanner, quét 1 mã vạch bất kỳ, sau đó mở `src\USB_Reader.log`:
 
-```
-src\USB_Reader.log
-```
+- Thấy dòng `Dang lang nghe ma vach` → script đang chạy
+- Thấy dòng `Ghi STT ...` → barcode đã được ghi vào Excel
 
-Nếu thấy dòng `Ghi STT ...` → đang hoạt động đúng.
+> **Lưu ý:** Scanner mới cần **quét ít nhất 1 mã vạch** thì mới được nhận diện và gán cột. Chỉ cắm vào chưa đủ.
 
 ---
 
@@ -74,7 +75,7 @@ Ghi vào Excel: STT | Thời gian | Scanner A | Scanner B | ...
       ↓  sheet mới tạo tự động khi sang tháng mới
 ```
 
-**Cấu trúc file Excel:**
+**Cấu trúc file Excel** (`thoi_gian_dong_hang.xlsx` ở thư mục gốc):
 
 | Cột A | Cột B | Cột C (Scanner 1) | Cột D (Scanner 2) |
 |-------|-------|-------------------|-------------------|
@@ -83,9 +84,10 @@ Ghi vào Excel: STT | Thời gian | Scanner A | Scanner B | ...
 | 2 | 2026-04-25 08:30:05 | | 8935009876543 |
 
 - Mỗi tháng tạo một sheet mới (tên sheet: `MM-yyyy`, VD: `04-2026`)
-- Sheet được sắp xếp theo thứ tự tăng dần: tháng cũ bên trái, tháng mới bên phải
-- Mỗi scanner được nhận diện tự động và gán vào cột riêng
-- Cột mới tự thêm khi có scanner mới kết nối
+- Sheet sắp xếp tăng dần: tháng cũ bên trái, tháng mới bên phải
+- Mỗi scanner được nhận diện tự động theo tên thiết bị và gán vào cột riêng
+- Cột mới tự thêm khi có scanner mới kết nối và quét lần đầu
+- Ghi được ngay kể cả khi file Excel đang mở
 
 ---
 
@@ -115,6 +117,18 @@ Hoặc dùng PowerShell trực tiếp:
 
 ## Xử lý sự cố
 
+### Kiểm tra script có đang chạy không
+
+Mở **Task Manager** → tab **Details** → tìm tiến trình `powershell.exe`. Hoặc xem `src\USB_Reader.log` — nếu có dòng `Dang lang nghe` là đang chạy.
+
+### Dừng script thủ công
+
+Mở **Task Manager** → tab **Details** → chuột phải `powershell.exe` → **End task**.  
+Hoặc chạy lệnh:
+```bat
+taskkill /f /im powershell.exe
+```
+
 ### Mã vạch không được ghi vào Excel
 
 - Kiểm tra `src\USB_Reader.log` xem có lỗi không
@@ -139,7 +153,7 @@ set SCANNER_SPEED_MS=150
 
 ### Cột bị lệch khi thêm/bớt scanner
 
-Xóa file `src\scanner_map.txt` để reset ánh xạ (script sẽ tự tạo lại).
+Xóa file `src\scanner_map.txt` để reset ánh xạ (script sẽ tự tạo lại khi quét lần đầu).
 
 ### Gỡ tự khởi động
 
