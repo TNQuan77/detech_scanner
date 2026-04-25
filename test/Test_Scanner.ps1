@@ -71,6 +71,7 @@ function Wait-ForReady {
 if ($TestDateChange) {
     $lastMonth = (Get-Date).AddMonths(-1).ToString("MM-yyyy")
     $thisMonth = Get-Date -Format "MM-yyyy"
+    $nextMonth = (Get-Date).AddMonths(1).ToString("MM-yyyy")
 
     Write-Host "=== Test thay doi thang ==="
     Write-Host "Buoc 1: Gia lap thang truoc ($lastMonth)"
@@ -86,9 +87,17 @@ if ($TestDateChange) {
     Start-MainScript -SimDate $thisMonth
     Wait-ForReady
     Send-Barcodes -Codes $Barcodes
+    Start-Sleep -Milliseconds 3000
 
     Write-Host ""
-    Write-Host "Xong! Mo file Excel kiem tra co 2 sheet: '$lastMonth' va '$thisMonth'"
+    Write-Host "Buoc 3: Gia lap thang sau ($nextMonth)"
+    Stop-MainScript
+    Start-MainScript -SimDate $nextMonth
+    Wait-ForReady
+    Send-Barcodes -Codes $Barcodes
+
+    Write-Host ""
+    Write-Host "Xong! Mo file Excel kiem tra thu tu sheet (trai->phai): '$nextMonth' | '$thisMonth' | '$lastMonth'"
 
 } elseif ($Date) {
     Write-Host "=== Gia lap scanner (thang: $Date) ==="

@@ -37,22 +37,43 @@ public class ExcelFinder {
         obj.GetType().InvokeMember(method, BindingFlags.InvokeMethod, null, obj, args);
     }
 
+    private static int ParseMonthKey(string name) {
+        string[] p = name.Split('-');
+        if (p.Length == 2) {
+            int month, year;
+            if (int.TryParse(p[0], out month) && int.TryParse(p[1], out year))
+                return year * 12 + month;
+        }
+        return -1;
+    }
+
     private static object FindOrCreateSheet(object wb, string sheetDate) {
-        object sheets   = Get(wb, "Sheets");
-        int    cnt      = (int)Get(sheets, "Count");
-        // Tim sheet co ten la ngay hom nay
+        object sheets = Get(wb, "Sheets");
+        int    cnt    = (int)Get(sheets, "Count");
         for (int s = 1; s <= cnt; s++) {
             object sh = Get(sheets, "Item", new object[] { s });
             if (string.Equals((string)Get(sh, "Name"), sheetDate, StringComparison.OrdinalIgnoreCase))
                 return sh;
         }
-        // Chua co -> tao sheet moi sau sheet cuoi cung
-        object last = Get(sheets, "Item", new object[] { cnt });
-        object mv   = System.Reflection.Missing.Value;
-        object ws   = sheets.GetType().InvokeMember("Add", System.Reflection.BindingFlags.InvokeMethod,
-                          null, sheets, new object[] { mv, last, mv, mv });
+        // Chen dung vi tri: moi nhat ben trai (index nho), cu hon ben phai (index lon)
+        int    newKey      = ParseMonthKey(sheetDate);
+        object insertBefore = null;
+        for (int s = 1; s <= cnt; s++) {
+            object sh  = Get(sheets, "Item", new object[] { s });
+            int    key = ParseMonthKey((string)Get(sh, "Name"));
+            if (key >= 0 && key < newKey) { insertBefore = sh; break; }
+        }
+        object mv = System.Reflection.Missing.Value;
+        object ws;
+        if (insertBefore != null)
+            ws = sheets.GetType().InvokeMember("Add", System.Reflection.BindingFlags.InvokeMethod,
+                     null, sheets, new object[] { insertBefore, mv, mv, mv });
+        else {
+            object last = Get(sheets, "Item", new object[] { cnt });
+            ws = sheets.GetType().InvokeMember("Add", System.Reflection.BindingFlags.InvokeMethod,
+                     null, sheets, new object[] { mv, last, mv, mv });
+        }
         Set(ws, "Name", new object[] { sheetDate });
-        // Header
         object c = Get(ws, "Cells");
         Set(Get(c, "Item", new object[] { 1, 1 }), "Value", new object[] { "STT" });
         Set(Get(c, "Item", new object[] { 1, 2 }), "Value", new object[] { "Thoi gian" });
@@ -485,11 +506,32 @@ function Get-HiddenExcel {
 # ----------------------------------------------------------------
 function Find-OrCreateSheet {
     param($Workbook, [string]$SheetName)
-    for ($s = 1; $s -le $Workbook.Sheets.Count; $s++) {
+    $cnt = $Workbook.Sheets.Count
+    for ($s = 1; $s -le $cnt; $s++) {
         if ($Workbook.Sheets.Item($s).Name -eq $SheetName) { return $Workbook.Sheets.Item($s) }
     }
-    # Tao sheet moi sau sheet cuoi
-    $ws = $Workbook.Sheets.Add([System.Reflection.Missing]::Value, $Workbook.Sheets.Item($Workbook.Sheets.Count))
+    # Parse "MM-yyyy" -> sort key
+    $keyOf = { param([string]$n)
+        $p = $n -split '-'
+        if ($p.Length -eq 2) {
+            $m = 0; $y = 0
+            if ([int]::TryParse($p[0],[ref]$m) -and [int]::TryParse($p[1],[ref]$y)) { return $y*12+$m }
+        }
+        return -1
+    }
+    $newKey = & $keyOf $SheetName
+    $insertBefore = $null
+    for ($s = 1; $s -le $cnt; $s++) {
+        $sh = $Workbook.Sheets.Item($s)
+        $k  = & $keyOf $sh.Name
+        if ($k -ge 0 -and $k -lt $newKey) { $insertBefore = $sh; break }
+    }
+    $mv = [System.Reflection.Missing]::Value
+    if ($null -ne $insertBefore) {
+        $ws = $Workbook.Sheets.Add($insertBefore, $mv, $mv, $mv)
+    } else {
+        $ws = $Workbook.Sheets.Add($mv, $Workbook.Sheets.Item($cnt), $mv, $mv)
+    }
     $ws.Name                         = $SheetName
     $ws.Cells.Item(1,1)              = "STT"
     $ws.Cells.Item(1,2)              = "Thoi gian"
