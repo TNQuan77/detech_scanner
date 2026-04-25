@@ -249,23 +249,27 @@ public class BarcodeRawInput {
         }
     }
 
+    public static string LastSaveError = "";
+
     private static void SaveMap() {
         if (string.IsNullOrEmpty(_mapFile)) return;
         try {
+            // Bo attributes truoc de tranh loi ghi de file Hidden/System
+            if (System.IO.File.Exists(_mapFile))
+                try { System.IO.File.SetAttributes(_mapFile, System.IO.FileAttributes.Normal); } catch {}
+
             var lines = new List<string>();
             foreach (var kv in _pathToName)
                 lines.Add(kv.Key + "\t" + kv.Value + "\t" + _pathToCol[kv.Key]);
-            // Dung FileShare.ReadWrite de tranh loi khi file dang duoc mo boi chuong trinh khac
-            using (var fs = new System.IO.FileStream(_mapFile,
-                System.IO.FileMode.Create,
-                System.IO.FileAccess.Write,
-                System.IO.FileShare.ReadWrite))
-            using (var sw = new System.IO.StreamWriter(fs, System.Text.Encoding.UTF8)) {
-                foreach (var line in lines) sw.WriteLine(line);
-            }
-            System.IO.File.SetAttributes(_mapFile,
-                System.IO.FileAttributes.Hidden | System.IO.FileAttributes.System);
-        } catch { }
+            System.IO.File.WriteAllLines(_mapFile, lines.ToArray(), System.Text.Encoding.UTF8);
+
+            try {
+                System.IO.File.SetAttributes(_mapFile,
+                    System.IO.FileAttributes.Hidden | System.IO.FileAttributes.System);
+            } catch {}
+        } catch (Exception ex) {
+            LastSaveError = ex.Message;
+        }
     }
 
     // Tra ve "displayName|colIdx" de ghi vao queue
@@ -563,6 +567,12 @@ $timer.Add_Tick({
     while ([BarcodeRawInput]::NewDevices.TryDequeue([ref]$newDev)) {
         $devParts = $newDev -split "`t", 2
         Write-Log "Phat hien thiet bi: $($devParts[0]) => $($devParts[1])"
+    }
+
+    # Log loi ghi scanner_map neu co
+    if (-not [string]::IsNullOrEmpty([BarcodeRawInput]::LastSaveError)) {
+        Write-Log "LOI ghi scanner_map: $([BarcodeRawInput]::LastSaveError)"
+        [BarcodeRawInput]::LastSaveError = ""
     }
 
     $elapsed = ([DateTime]::Now - $script:lastFlush).TotalMilliseconds
