@@ -83,6 +83,7 @@ Ghi vào Excel: STT | Thời gian | Scanner A | Scanner B | ...
 | 2 | 2026-04-25 08:30:05 | | 8935009876543 |
 
 - Mỗi tháng tạo một sheet mới (tên sheet: `MM-yyyy`, VD: `04-2026`)
+- Sheet được sắp xếp theo thứ tự tăng dần: tháng cũ bên trái, tháng mới bên phải
 - Mỗi scanner được nhận diện tự động và gán vào cột riêng
 - Cột mới tự thêm khi có scanner mới kết nối
 
@@ -94,7 +95,7 @@ Chạy `test\Test_Scanner.bat` để giả lập máy quét:
 
 ```
 [1] Gửi barcode vào tháng hiện tại (script chính phải đang chạy)
-[2] Giả lập qua tháng mới (tự động restart script)
+[2] Giả lập qua tháng (tự động restart script, tạo 3 sheet liên tiếp)
 ```
 
 Hoặc dùng PowerShell trực tiếp:
@@ -106,7 +107,7 @@ Hoặc dùng PowerShell trực tiếp:
 # Gửi vào tháng cụ thể
 .\test\Test_Scanner.ps1 -Date "04-2026"
 
-# Giả lập chuyển tháng (tạo 2 sheet)
+# Giả lập chuyển tháng (tạo 3 sheet: tháng trước | tháng này | tháng sau)
 .\test\Test_Scanner.ps1 -TestDateChange
 ```
 
