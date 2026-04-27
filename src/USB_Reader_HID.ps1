@@ -242,6 +242,7 @@ public class BarcodeRawInput {
     private static Dictionary<IntPtr, string>        _ids         = new Dictionary<IntPtr, string>();
     private static Dictionary<IntPtr, StringBuilder> _bufs        = new Dictionary<IntPtr, StringBuilder>();
     private static Dictionary<IntPtr, DateTime>      _times       = new Dictionary<IntPtr, DateTime>();
+    private static Dictionary<IntPtr, List<double>>  _charTimes   = new Dictionary<IntPtr, List<double>>();
     private static Dictionary<string, string>        _pathToName  = new Dictionary<string, string>(); // HID path -> display name
     private static Dictionary<string, int>           _pathToCol   = new Dictionary<string, int>();    // HID path -> col index
     private static string _mapFile    = "";
@@ -413,27 +414,54 @@ public class BarcodeRawInput {
             double elapsed = (_times[hDevice] == DateTime.MinValue)
                 ? 0 : (DateTime.Now - _times[hDevice]).TotalMilliseconds;
 
-            if (sbuf.Length > 0 && elapsed > _threshold * 4) sbuf.Clear();
+            if (sbuf.Length > 0 && elapsed > _threshold * 4) {
+                sbuf.Clear();
+                if (_charTimes.ContainsKey(hDevice)) _charTimes[hDevice].Clear();
+            }
             _times[hDevice] = DateTime.Now;
 
             if (vk == 13) { // Enter
                 string code = sbuf.ToString().Trim();
+                List<double> ct = _charTimes.ContainsKey(hDevice)
+                    ? new List<double>(_charTimes[hDevice]) : new List<double>();
                 sbuf.Clear();
+                if (_charTimes.ContainsKey(hDevice)) _charTimes[hDevice].Clear();
+
+                // Tach cac ma bi ghep: tim gap > threshold*2 giua cac ky tu lien tiep
+                var segments = new List<string>();
+                int segStart = 0;
+                for (int si = 1; si < ct.Count && si < code.Length; si++) {
+                    if (ct[si] > _threshold * 2) {
+                        string seg = code.Substring(segStart, si - segStart).Trim();
+                        if (seg.Length >= _minLen) segments.Add(seg);
+                        segStart = si;
+                    }
+                }
+                if (segStart < code.Length) {
+                    string last = code.Substring(segStart).Trim();
+                    if (last.Length >= _minLen) segments.Add(last);
+                }
+
                 // Chi gan Scanner ID khi nhan duoc barcode hop le
                 // -> keyboard thuong khong bao gio duoc dang ky
-                if (code.Length >= _minLen) {
+                if (segments.Count > 0) {
                     bool   isNew;
                     string encoded = GetOrAssign(hDevice, out isNew); // "name|colIdx"
                     if (isNew) {
                         string displayName = encoded.Split('|')[0];
                         NewDevices.Enqueue(displayName + "\t" + GetDevicePath(hDevice));
                     }
-                    Queue.Enqueue(encoded + "\t" + code); // "name|colIdx\tbarcode"
+                    foreach (string seg in segments)
+                        Queue.Enqueue(encoded + "\t" + seg);
                 }
                 return;
             }
             if (vk == 8) { // Backspace
-                if (sbuf.Length > 0) sbuf.Remove(sbuf.Length - 1, 1);
+                if (sbuf.Length > 0) {
+                    sbuf.Remove(sbuf.Length - 1, 1);
+                    if (_charTimes.ContainsKey(hDevice) && _charTimes[hDevice].Count > 0)
+                        _charTimes[hDevice].RemoveAt(_charTimes[hDevice].Count - 1);
+                }
                 return;
             }
             if (vk < 32 || (vk >= 91 && vk <= 93) || vk == 20 || vk == 16 || vk == 17 || vk == 18)
@@ -443,7 +471,11 @@ public class BarcodeRawInput {
             for (int i = 0; i < 256; i++) state[i] = (byte)(GetKeyState(i) & 0xFF);
             var sb2 = new StringBuilder(4);
             int res = ToUnicodeEx(vk, kb.MakeCode, state, sb2, sb2.Capacity, 0, GetKeyboardLayout(0));
-            if (res >= 1) sbuf.Append(sb2[0]);
+            if (res >= 1) {
+                if (!_charTimes.ContainsKey(hDevice)) _charTimes[hDevice] = new List<double>();
+                _charTimes[hDevice].Add(elapsed);
+                sbuf.Append(sb2[0]);
+            }
         } finally {
             Marshal.FreeHGlobal(buf);
         }
