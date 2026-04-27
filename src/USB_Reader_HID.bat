@@ -17,6 +17,10 @@ set SCANNER_SPEED_MS=30
 
 :: Do dai ma vach toi thieu (bo qua cac phim le / ngan hon)
 set MIN_BARCODE_LEN=3
+
+:: AutoHotkey — suppress keystroke tu scanner vao cac app khac
+set AHK_EXE=%~dp0..\bin\AutoHotkey64.exe
+set AHK_SCRIPT=%~dp0..\suppress_scanner.ahk
 :: --------------------------------
 
 set SCRIPT=%~dp0USB_Reader_HID.ps1
@@ -25,6 +29,11 @@ if not exist "%SCRIPT%" (
     echo [LOI] Khong tim thay: %SCRIPT%
     pause
     exit /b 1
+)
+
+:: Khoi dong AHK suppress (neu co san, bo qua neu chua cai)
+if exist "%AHK_EXE%" if exist "%AHK_SCRIPT%" (
+    start "" /b "%AHK_EXE%" "%AHK_SCRIPT%"
 )
 
 powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden ^

@@ -19,7 +19,11 @@ Tự động bắt dữ liệu từ nhiều máy quét mã vạch USB/Bluetooth 
 ```
 detech_scanner/
 ├── Setup_Autostart.bat          # Đăng ký tự khởi động cùng Windows (chạy 1 lần)
+├── suppress_scanner.ahk         # AutoHotkey script — chặn phím scanner vào app khác
 ├── thoi_gian_dong_hang.xlsx     # File Excel dữ liệu (tự tạo khi chạy)
+├── bin/
+│   ├── get_ahk.txt              # Hướng dẫn tải AutoHotkey portable
+│   └── AutoHotkey64.exe         # AutoHotkey v2 portable (tải riêng, xem get_ahk.txt)
 ├── src/
 │   ├── USB_Reader_HID.ps1       # Logic chính (không cần chỉnh)
 │   ├── USB_Reader_HID.bat       # Launcher — chỉnh cấu hình ở đây
@@ -51,6 +55,16 @@ set MIN_BARCODE_LEN=3       :: Độ dài mã vạch tối thiểu
 Script sẽ chạy **ẩn hoàn toàn** (không có cửa sổ) mỗi khi đăng nhập Windows.
 
 > Tương thích Windows 10 và Windows 11. Dùng Registry HKCU\Run — không cần quyền Administrator.
+
+### Bước 2b — Cài AutoHotkey để chặn phím scanner (tuỳ chọn)
+
+Nếu scanner đang gõ phím vào các ứng dụng đang mở (trình duyệt, Excel, v.v.), cài thêm AutoHotkey portable để chặn:
+
+1. Xem file `bin\get_ahk.txt` để tải `AutoHotkey64.exe`
+2. Đặt file vào thư mục `bin\`
+3. Script sẽ tự động khởi động AHK mỗi lần chạy
+
+> Nếu không có `bin\AutoHotkey64.exe`, script vẫn chạy bình thường — chỉ không chặn phím scanner.
 
 ### Bước 3 — Kiểm tra hoạt động
 

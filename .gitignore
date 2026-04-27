@@ -2,3 +2,4 @@
 *.log
 scanner_map.txt
 Uninstall_Autostart.bat
+bin/*.exe
