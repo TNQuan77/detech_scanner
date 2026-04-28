@@ -13,21 +13,37 @@ param(
     [int]$DelayMs             = 500
 )
 
-Add-Type -AssemblyName System.Windows.Forms
-
 $scriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $srcDir     = Join-Path (Split-Path -Parent $scriptDir) "src"
 $mainScript = Join-Path $srcDir "USB_Reader_HID.ps1"
 $mainBat    = Join-Path $srcDir "USB_Reader_HID.bat"
+$injectFile = Join-Path $srcDir "test_inject.queue"
 
 function Send-Barcodes {
     param([string[]]$Codes)
     foreach ($b in $Codes) {
-        $escaped = $b -replace '([+^%~(){}\[\]])', '{$1}'
-        [System.Windows.Forms.SendKeys]::SendWait($escaped + "{ENTER}")
+        $line = "Test Scanner|1`t$b"
+        [System.IO.File]::AppendAllText($injectFile, $line + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
         Write-Host "  Sent: $b"
         Start-Sleep -Milliseconds $DelayMs
     }
+}
+
+function Wait-ForFlush {
+    param([int]$TimeoutSec = 15)
+    Write-Host "  Chap Excel dong file..." -NoNewline
+    $deadline = [DateTime]::Now.AddSeconds($TimeoutSec)
+    
+    # Wait for Excel to finish flushing (look for "Da thoat" in log or timeout)
+    while ([DateTime]::Now -lt $deadline) {
+        if (Test-Path $logFile) {
+            $content = Get-Content $logFile -ErrorAction SilentlyContinue | Select-Object -Last 5
+            if ($content -match "Da thoat") { Write-Host " OK"; return }
+        }
+        Write-Host "." -NoNewline
+        Start-Sleep -Milliseconds 500
+    }
+    Write-Host " TIMEOUT (se dong by force)"
 }
 
 $logFile = Join-Path $srcDir "USB_Reader.log"
@@ -37,9 +53,15 @@ function Stop-MainScript {
         Where-Object { $_.MainWindowTitle -eq "" } |
         ForEach-Object {
             $cmdline = (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
-            if ($cmdline -like "*USB_Reader_HID*") { $_ | Stop-Process -Force }
+            if ($cmdline -like "*USB_Reader_HID*") { 
+                # First try graceful close by sending Enter to trigger exit
+                try { $_ | Stop-Process -ErrorAction SilentlyContinue } catch {}
+                Start-Sleep -Milliseconds 500
+                # Force kill if still running
+                if (-not $_.HasExited) { $_ | Stop-Process -Force -ErrorAction SilentlyContinue }
+            }
         }
-    Start-Sleep -Milliseconds 1000
+    Start-Sleep -Milliseconds 2000
 }
 
 function Start-MainScript {
@@ -79,7 +101,7 @@ if ($TestDateChange) {
     Start-MainScript -SimDate $lastMonth
     Wait-ForReady
     Send-Barcodes -Codes $Barcodes
-    Start-Sleep -Milliseconds 3000   # cho timer flush Excel (2s) kip chay truoc khi kill
+    Wait-ForFlush
 
     Write-Host ""
     Write-Host "Buoc 2: Gia lap thang nay ($thisMonth)"
@@ -87,7 +109,7 @@ if ($TestDateChange) {
     Start-MainScript -SimDate $thisMonth
     Wait-ForReady
     Send-Barcodes -Codes $Barcodes
-    Start-Sleep -Milliseconds 3000
+    Wait-ForFlush
 
     Write-Host ""
     Write-Host "Buoc 3: Gia lap thang sau ($nextMonth)"
@@ -95,9 +117,11 @@ if ($TestDateChange) {
     Start-MainScript -SimDate $nextMonth
     Wait-ForReady
     Send-Barcodes -Codes $Barcodes
+    Wait-ForFlush
 
     Write-Host ""
     Write-Host "Xong! Mo file Excel kiem tra thu tu sheet (trai->phai): '$lastMonth' | '$thisMonth' | '$nextMonth'"
+    Stop-MainScript
 
 } elseif ($Date) {
     Write-Host "=== Gia lap scanner (thang: $Date) ==="
@@ -105,6 +129,8 @@ if ($TestDateChange) {
     Start-MainScript -SimDate $Date
     Wait-ForReady
     Send-Barcodes -Codes $Barcodes
+    Wait-ForFlush
+    Stop-MainScript
     Write-Host "Xong!"
 
 } else {

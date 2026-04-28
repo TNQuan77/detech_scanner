@@ -7,11 +7,34 @@ param(
     [string]$SimulateDate  = ""   # Override thang de test, VD: "04-2026"
 )
 
-Add-Type -AssemblyName System.Windows.Forms
+# Normalize paths to avoid issues with ".." in paths
+$ExcelFile = [System.IO.Path]::GetFullPath($ExcelFile)
+$LogFile = [System.IO.Path]::GetFullPath($LogFile)
+
+Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
 
 # ----------------------------------------------------------------
-# C#: Ghi barcode truc tiep vao Excel cua user qua Window Handle
+# Helper: Ensure file is writable
 # ----------------------------------------------------------------
+function Ensure-FileWritable {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath)) { return }
+    try {
+        $file = Get-Item $FilePath -Force
+        $attrs = $file.Attributes
+        if ($attrs -band [System.IO.FileAttributes]::ReadOnly) {
+            $oldAttrs = $file.Attributes
+            $file.Attributes = $attrs -bxor [System.IO.FileAttributes]::ReadOnly
+            Write-Log "Loai bo read-only: $FilePath (oldAttrs=$oldAttrs, newAttrs=$($file.Attributes))"
+        }
+    } catch { 
+        Write-Log "Canh bao: Khong the sua doi attribute: $FilePath - $_" 
+    }
+}
+
+# ================================================================
+# C#: Ghi barcode truc tiep vao Excel cua user qua Window Handle
+# ================================================================
 Add-Type -TypeDefinition @"
 using System;
 using System.Reflection;
@@ -161,7 +184,7 @@ public class ExcelFinder {
         return -1;
     }
 }
-"@ -Language CSharp
+"@ -Language CSharp -ErrorAction Stop
 
 # ----------------------------------------------------------------
 # C#: Raw Input API — phan biet tung may quet theo HID device handle
@@ -223,21 +246,22 @@ public class BarcodeRawInput {
     private static extern int GetRawInputDeviceInfoW(IntPtr hDevice, uint cmd,
         IntPtr pData, ref int pcbSize);
 
-    [DllImport("user32.dll")]
-    private static extern short  GetKeyState(int vk);
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetKeyboardLayout(uint tid);
-    [DllImport("user32.dll")]
-    private static extern int ToUnicodeEx(uint vk, uint scan, byte[] state,
-        [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder sb,
-        int cap, uint flags, IntPtr hkl);
-
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CreateFile(string lpFileName, uint dwDesiredAccess,
         uint dwShareMode, IntPtr lpSec, uint dwCreationDisp, uint dwFlags, IntPtr hTemplate);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr h);
     [DllImport("hid.dll", CharSet = CharSet.Unicode)]
     private static extern bool HidD_GetProductString(IntPtr hDev, [Out] char[] buf, uint len);
+    [DllImport("user32.dll")]
+    private static extern uint GetMessageTime();
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetKeyboardLayout(uint tid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr LoadKeyboardLayout(string pwszKLID, uint Flags);
+    [DllImport("user32.dll")]
+    private static extern int ToUnicodeEx(uint vk, uint scan, byte[] state,
+        [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder sb,
+        int cap, uint flags, IntPtr hkl);
 
     private static readonly IntPtr INVALID_HANDLE = new IntPtr(-1);
     private const uint FILE_SHARE_RW = 0x00000001 | 0x00000002;
@@ -250,14 +274,56 @@ public class BarcodeRawInput {
 
     private static Dictionary<IntPtr, string>        _ids         = new Dictionary<IntPtr, string>();
     private static Dictionary<IntPtr, StringBuilder> _bufs        = new Dictionary<IntPtr, StringBuilder>();
-    private static Dictionary<IntPtr, DateTime>      _times       = new Dictionary<IntPtr, DateTime>();
+    private static Dictionary<IntPtr, uint>          _times       = new Dictionary<IntPtr, uint>();
     private static Dictionary<IntPtr, List<double>>  _charTimes   = new Dictionary<IntPtr, List<double>>();
+    private static bool _shiftDown = false;
+    private static bool _capsOn    = false;
+    private static IntPtr _decodeLayout = IntPtr.Zero;
+    private static bool   _decodeLayoutLoaded = false;
     private static Dictionary<string, string>        _pathToName  = new Dictionary<string, string>(); // HID path -> display name
     private static Dictionary<string, int>           _pathToCol   = new Dictionary<string, int>();    // HID path -> col index
     private static string _mapFile    = "";
     private static int    _nextColIdx = 1;
     private static int    _threshold  = 100;
     private static int    _minLen     = 3;
+
+    private static IntPtr GetDecodeLayout() {
+        if (!_decodeLayoutLoaded) {
+            _decodeLayoutLoaded = true;
+            try { _decodeLayout = LoadKeyboardLayout("00000409", 0); } catch {}
+        }
+        return _decodeLayout != IntPtr.Zero ? _decodeLayout : GetKeyboardLayout(0);
+    }
+
+    private static char? VkToCharUs(uint vk, bool shift, bool caps) {
+        if (vk >= 0x41 && vk <= 0x5A) {
+            bool upper = shift ^ caps;
+            return upper ? (char)vk : (char)(vk + 32);
+        }
+        if (vk >= 0x30 && vk <= 0x39) {
+            if (!shift) return (char)vk;
+            return ")!@#$%^&*("[(int)(vk - 0x30)];
+        }
+        if (vk >= 0x60 && vk <= 0x69) return (char)('0' + (vk - 0x60));
+        if (vk == 0x6A) return '*';
+        if (vk == 0x6B) return '+';
+        if (vk == 0x6D) return '-';
+        if (vk == 0x6E) return '.';
+        if (vk == 0x6F) return '/';
+        if (vk == 0x20) return ' ';
+        if (vk == 0xBA) return shift ? ':' : ';';
+        if (vk == 0xBB) return shift ? '+' : '=';
+        if (vk == 0xBC) return shift ? '<' : ',';
+        if (vk == 0xBD) return shift ? '_' : '-';
+        if (vk == 0xBE) return shift ? '>' : '.';
+        if (vk == 0xBF) return shift ? '?' : '/';
+        if (vk == 0xC0) return shift ? '~' : (char)0x60;
+        if (vk == 0xDB) return shift ? '{' : '[';
+        if (vk == 0xDC) return shift ? '|' : '\\';
+        if (vk == 0xDD) return shift ? '}' : ']';
+        if (vk == 0xDE) return shift ? '"' : '\'';
+        return null;
+    }
 
     private static string GetFriendlyName(string devicePath) {
         try {
@@ -411,23 +477,34 @@ public class BarcodeRawInput {
             var kb = (RAWKEYBOARD)Marshal.PtrToStructure(
                 new IntPtr(buf.ToInt64() + headerSz), typeof(RAWKEYBOARD));
 
-            if ((kb.Flags & RI_KEY_BREAK) != 0) return; // key-up
-
-            IntPtr hDevice = header.hDevice;
+            bool   isKeyUp = (kb.Flags & RI_KEY_BREAK) != 0;
             uint   vk      = kb.VKey;
 
-            if (!_bufs.ContainsKey(hDevice))  _bufs[hDevice]  = new StringBuilder(256);
-            if (!_times.ContainsKey(hDevice)) _times[hDevice] = DateTime.MinValue;
+            // Track Shift key-up immediately so next character state is accurate.
+            if (isKeyUp) {
+                if (vk == 0x10 || vk == 0xA0 || vk == 0xA1) _shiftDown = false;
+                return;
+            }
 
-            var    sbuf    = _bufs[hDevice];
-            double elapsed = (_times[hDevice] == DateTime.MinValue)
-                ? 0 : (DateTime.Now - _times[hDevice]).TotalMilliseconds;
+            IntPtr hDevice = header.hDevice;
+
+            if (!_bufs.ContainsKey(hDevice))  _bufs[hDevice]  = new StringBuilder(256);
+
+            var  sbuf   = _bufs[hDevice];
+            uint msgTime = GetMessageTime();
+            double elapsed = _times.ContainsKey(hDevice) && _times[hDevice] != 0
+                ? (double)(msgTime - _times[hDevice]) : 0;
 
             if (sbuf.Length > 0 && elapsed > _threshold * 4) {
                 sbuf.Clear();
                 if (_charTimes.ContainsKey(hDevice)) _charTimes[hDevice].Clear();
             }
-            _times[hDevice] = DateTime.Now;
+            _times[hDevice] = msgTime;
+
+            // Modifier keys still need to update timing above; otherwise uppercase
+            // scans can be split because Shift gaps get counted into the next char.
+            if (vk == 0x10 || vk == 0xA0 || vk == 0xA1) { _shiftDown = true; return; }
+            if (vk == 0x14) { _capsOn = !_capsOn; return; }
 
             if (vk == 13) { // Enter
                 string code = sbuf.ToString().Trim();
@@ -477,13 +554,26 @@ public class BarcodeRawInput {
                 return;
 
             byte[] state = new byte[256];
-            for (int i = 0; i < 256; i++) state[i] = (byte)(GetKeyState(i) & 0xFF);
-            var sb2 = new StringBuilder(4);
-            int res = ToUnicodeEx(vk, kb.MakeCode, state, sb2, sb2.Capacity, 0, GetKeyboardLayout(0));
-            if (res >= 1) {
+            if (_shiftDown) {
+                state[0x10] = 0x80;
+                state[0xA0] = 0x80;
+                state[0xA1] = 0x80;
+            }
+            if (_capsOn) state[0x14] = 0x01;
+            if (vk < state.Length) state[(int)vk] = 0x80;
+
+            // Prefer a fixed US ASCII mapping for common barcode characters so
+            // the result does not depend on UniKey / active input method.
+            char? ch = VkToCharUs(vk, _shiftDown, _capsOn);
+            if (!ch.HasValue) {
+                var sb2 = new StringBuilder(4);
+                int res = ToUnicodeEx(vk, kb.MakeCode, state, sb2, sb2.Capacity, 0, GetDecodeLayout());
+                if (res >= 1) ch = sb2[0];
+            }
+            if (ch.HasValue) {
                 if (!_charTimes.ContainsKey(hDevice)) _charTimes[hDevice] = new List<double>();
                 _charTimes[hDevice].Add(elapsed);
-                sbuf.Append(sb2[0]);
+                sbuf.Append(ch.Value);
             }
         } finally {
             Marshal.FreeHGlobal(buf);
@@ -500,7 +590,91 @@ public class ScannerForm : System.Windows.Forms.Form {
     }
 }
 
-"@ -Language CSharp -ReferencedAssemblies "System.Windows.Forms"
+// Chan keystroke cua scanner khoi cac app khac / UniKey bang WH_KEYBOARD_LL
+// Raw Input van tiep tuc nhan du lieu nen script tu decode barcode.
+public class KeyboardSuppressor {
+    private const int WH_KEYBOARD_LL = 13;
+    private const int WM_KEYDOWN     = 0x0100;
+    private const int WM_SYSKEYDOWN  = 0x0104;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc fn, IntPtr hMod, uint tid);
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int vk);
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr GetModuleHandle(string name);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT {
+        public uint   vkCode;
+        public uint   scanCode;
+        public uint   flags;
+        public uint   time;
+        public IntPtr dwExtraInfo;
+    }
+
+    private const uint LLKHF_INJECTED = 0x10;
+
+    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    private static IntPtr               _hook      = IntPtr.Zero;
+    private static LowLevelKeyboardProc _proc;
+    private static DateTime             _lastKey   = DateTime.MinValue;
+    private static bool                 _scanMode  = false;
+    private static int                  _threshold = 50;
+    private static int                  _idleMs    = 300;
+    public static string                LastError  = "";
+
+    public static void Install(int thresholdMs) {
+        _threshold = thresholdMs;
+        _idleMs    = Math.Max(300, thresholdMs * 6);
+        _proc      = Callback;
+        _hook      = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
+        if (_hook == IntPtr.Zero)
+            LastError = "SetWindowsHookEx failed: " + Marshal.GetLastWin32Error();
+    }
+
+    public static void Uninstall() {
+        if (_hook != IntPtr.Zero) {
+            UnhookWindowsHookEx(_hook);
+            _hook = IntPtr.Zero;
+        }
+    }
+
+    private static IntPtr Callback(int nCode, IntPtr wParam, IntPtr lParam) {
+        if (nCode >= 0 && ((int)wParam == WM_KEYDOWN || (int)wParam == WM_SYSKEYDOWN)) {
+            var ks = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+
+            // Phim gia lap (SendInput / SendKeys) -> pass through de test script van chay.
+            if ((ks.flags & LLKHF_INJECTED) != 0)
+                return CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            // Neu dang giu Ctrl / Alt / Win thi khong chan.
+            bool modified = (GetKeyState(0x11) & 0x8000) != 0
+                         || (GetKeyState(0x12) & 0x8000) != 0
+                         || (GetKeyState(0x5B) & 0x8000) != 0
+                         || (GetKeyState(0x5C) & 0x8000) != 0;
+            if (!modified) {
+                double gap = _lastKey == DateTime.MinValue ? 99999
+                           : (DateTime.Now - _lastKey).TotalMilliseconds;
+                _lastKey = DateTime.Now;
+
+                if (gap < _threshold || (_scanMode && gap < _idleMs)) {
+                    _scanMode = true;
+                    return (IntPtr)1;
+                }
+                _scanMode = false;
+            }
+        }
+        return CallNextHookEx(_hook, nCode, wParam, lParam);
+    }
+}
+
+"@ -Language CSharp -ReferencedAssemblies "System.Windows.Forms" -ErrorAction Stop
 
 # ----------------------------------------------------------------
 # Helper
@@ -525,6 +699,364 @@ function Write-Log {
     Write-Host $line
 }
 
+function Invoke-ComMethod {
+    param(
+        [Parameter(Mandatory)]$ComObject,
+        [Parameter(Mandatory)][string]$MethodName,
+        [object[]]$Arguments = @()
+    )
+
+    return $ComObject.GetType().InvokeMember(
+        $MethodName,
+        [System.Reflection.BindingFlags]::InvokeMethod,
+        $null,
+        $ComObject,
+        $Arguments
+    )
+}
+
+# ----------------------------------------------------------------
+# Hidden Excel worker: thread STA rieng, pre-warm luc start, khong giu lock workbook
+# ----------------------------------------------------------------
+$script:excelQueue            = $null
+$script:excelLogQueue         = $null
+$script:excelWorkerState      = $null
+$script:excelWorkerRunspace   = $null
+$script:excelWorkerPowerShell = $null
+$script:excelWorkerHandle     = $null
+
+function Flush-ExcelWorkerLogs {
+    if ($null -eq $script:excelLogQueue) { return }
+    [string]$msg = $null
+    while ($script:excelLogQueue.TryDequeue([ref]$msg)) {
+        Write-Log $msg
+    }
+}
+
+function Start-ExcelWorker {
+    if ($null -ne $script:excelWorkerPowerShell) { return }
+
+    $script:excelQueue       = [System.Collections.Concurrent.BlockingCollection[object]]::new()
+    $script:excelLogQueue    = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+    $script:excelWorkerState = [hashtable]::Synchronized(@{
+        Ready   = $false
+        Busy    = $false
+        Stopped = $false
+    })
+
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $iss.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry -ArgumentList 'ExcelQueue', $script:excelQueue, 'Excel write queue'))
+    $iss.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry -ArgumentList 'ExcelLogQueue', $script:excelLogQueue, 'Excel worker logs'))
+    $iss.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry -ArgumentList 'ExcelWorkerState', $script:excelWorkerState, 'Excel worker state'))
+
+    $script:excelWorkerRunspace = [runspacefactory]::CreateRunspace($iss)
+    $script:excelWorkerRunspace.ApartmentState = 'STA'
+    $script:excelWorkerRunspace.ThreadOptions  = 'ReuseThread'
+    $script:excelWorkerRunspace.Open()
+
+    $workerScript = @'
+function Queue-WorkerLog {
+    param([string]$Message)
+    $ExcelLogQueue.Enqueue($Message)
+}
+
+function Invoke-ComMethod {
+    param(
+        [Parameter(Mandatory)]$ComObject,
+        [Parameter(Mandatory)][string]$MethodName,
+        [object[]]$Arguments = @()
+    )
+
+    return $ComObject.GetType().InvokeMember(
+        $MethodName,
+        [System.Reflection.BindingFlags]::InvokeMethod,
+        $null,
+        $ComObject,
+        $Arguments
+    )
+}
+
+function Ensure-FileWritable {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath)) { return }
+    try {
+        $file = Get-Item $FilePath -Force
+        $attrs = $file.Attributes
+        if ($attrs -band [System.IO.FileAttributes]::ReadOnly) {
+            $file.Attributes = $attrs -bxor [System.IO.FileAttributes]::ReadOnly
+            Queue-WorkerLog "Loai bo read-only: $FilePath"
+        }
+    } catch {
+        Queue-WorkerLog "Canh bao: Khong the sua doi attribute: $FilePath - $_"
+    }
+}
+
+function Find-OrCreateSheet {
+    param($Workbook, [string]$SheetName)
+    $cnt = $Workbook.Sheets.Count
+    for ($s = 1; $s -le $cnt; $s++) {
+        if ($Workbook.Sheets.Item($s).Name -eq $SheetName) { return $Workbook.Sheets.Item($s) }
+    }
+
+    $keyOf = {
+        param([string]$Name)
+        $parts = $Name -split '-'
+        if ($parts.Length -eq 2) {
+            $month = 0
+            $year  = 0
+            if ([int]::TryParse($parts[0], [ref]$month) -and [int]::TryParse($parts[1], [ref]$year)) {
+                return $year * 12 + $month
+            }
+        }
+        return -1
+    }
+
+    $newKey = & $keyOf $SheetName
+    $insertBefore = $null
+    for ($s = 1; $s -le $cnt; $s++) {
+        $sheet = $Workbook.Sheets.Item($s)
+        $key   = & $keyOf $sheet.Name
+        if ($key -ge 0 -and $key -gt $newKey) {
+            $insertBefore = $sheet
+            break
+        }
+    }
+
+    $mv = [System.Reflection.Missing]::Value
+    if ($null -ne $insertBefore) {
+        $ws = Invoke-ComMethod -ComObject $Workbook.Sheets -MethodName Add -Arguments @($insertBefore, $mv, $mv, $mv)
+    } else {
+        $ws = Invoke-ComMethod -ComObject $Workbook.Sheets -MethodName Add -Arguments @($mv, $Workbook.Sheets.Item($cnt), $mv, $mv)
+    }
+    $ws.Name                         = $SheetName
+    $ws.Cells.Item(1,1)              = "STT"
+    $ws.Cells.Item(1,2)              = "Thoi gian"
+    $ws.Rows.Item(1).Font.Bold       = $true
+    $ws.Columns.Item(1).ColumnWidth  = 6
+    $ws.Columns.Item(2).ColumnWidth  = 22
+    return $ws
+}
+
+function Close-Workbook {
+    param($Workbook)
+    if ($null -eq $Workbook) { return }
+    try { Invoke-ComMethod -ComObject $Workbook -MethodName Close -Arguments @($false) | Out-Null } catch {}
+    try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Workbook) | Out-Null } catch {}
+}
+
+function Open-HiddenWorkbook {
+    param(
+        $ExcelApp,
+        [string]$Path,
+        [string]$SheetDate
+    )
+
+    Ensure-FileWritable -FilePath $Path
+    $workbooks = $ExcelApp.Workbooks
+
+    if (Test-Path $Path) {
+        $wb = Invoke-ComMethod -ComObject $workbooks -MethodName Open -Arguments @($Path, 0, $false)
+    } else {
+        $wb = Invoke-ComMethod -ComObject $workbooks -MethodName Add
+        $wb.Sheets.Item(1).Name                        = $SheetDate
+        $wb.Sheets.Item(1).Cells.Item(1,1)             = "STT"
+        $wb.Sheets.Item(1).Cells.Item(1,2)             = "Thoi gian"
+        $wb.Sheets.Item(1).Rows.Item(1).Font.Bold      = $true
+        $wb.Sheets.Item(1).Columns.Item(1).ColumnWidth = 6
+        $wb.Sheets.Item(1).Columns.Item(2).ColumnWidth = 22
+        Invoke-ComMethod -ComObject $wb -MethodName SaveAs -Arguments @($Path, 51) | Out-Null
+    }
+
+    if ($wb.ReadOnly) {
+        Close-Workbook -Workbook $wb
+        throw "Workbook mo ra o che do read-only: $Path"
+    }
+
+    return $wb
+}
+
+function Flush-Batch {
+    param(
+        $Batch,
+        $ExcelApp
+    )
+
+    $path       = [System.IO.Path]::GetFullPath([string]$Batch.Path)
+    $barcodes   = @($Batch.Barcodes)
+    $scanners   = @($Batch.Scanners)
+    $cols       = @($Batch.Cols)
+    $sheetDate  = [string]$Batch.SheetDate
+    $createdNew = -not (Test-Path $path)
+
+    if ($barcodes.Count -eq 0 -and -not $createdNew) { return }
+
+    $timestamps = $barcodes | ForEach-Object { Get-Date -Format "yyyy-MM-dd HH:mm:ss" }
+    Ensure-FileWritable -FilePath $path
+
+    if ($barcodes.Count -gt 0) {
+        $firstStt = [ExcelFinder]::AppendBarcodes($path, $timestamps, $barcodes, $scanners, $cols, $sheetDate)
+        if ($firstStt -ge 0) {
+            for ($i = 0; $i -lt $barcodes.Count; $i++) {
+                Queue-WorkerLog "[$($scanners[$i])] Ghi STT $($firstStt + $i): $($barcodes[$i])"
+            }
+            return
+        }
+    }
+
+    $wb = $null
+    try {
+        $wb = Open-HiddenWorkbook -ExcelApp $ExcelApp -Path $path -SheetDate $sheetDate
+        $ws = Find-OrCreateSheet -Workbook $wb -SheetName $sheetDate
+        $nextRow = [Math]::Max(2, $ws.UsedRange.Rows.Count + 1)
+
+        for ($i = 0; $i -lt $barcodes.Count; $i++) {
+            $scanCol = 2 + [int]$cols[$i]
+
+            if ([string]::IsNullOrWhiteSpace($ws.Cells.Item(1, $scanCol).Value2)) {
+                $ws.Cells.Item(1, $scanCol)             = $scanners[$i]
+                $ws.Columns.Item($scanCol).NumberFormat = "@"
+                $ws.Cells.Item(1, $scanCol).Font.Bold   = $true
+            }
+
+            $ts  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            $stt = $nextRow - 1
+            $ws.Cells.Item($nextRow, 1)                     = $stt
+            $ws.Cells.Item($nextRow, 2)                     = $ts
+            $ws.Cells.Item($nextRow, $scanCol).NumberFormat = "@"
+            $ws.Cells.Item($nextRow, $scanCol).Value2       = $barcodes[$i]
+            $nextRow++
+            Queue-WorkerLog "[$($scanners[$i])] Ghi STT ${stt}: $($barcodes[$i])"
+        }
+
+        Invoke-ComMethod -ComObject $wb -MethodName Save | Out-Null
+        if ($createdNew) {
+            Queue-WorkerLog "Tao file moi: $path"
+        } elseif ($barcodes.Count -gt 0) {
+            Queue-WorkerLog "OK: Luu file thanh cong"
+        }
+    } finally {
+        Close-Workbook -Workbook $wb
+    }
+}
+
+$xl = $null
+try {
+    $xl = New-Object -ComObject Excel.Application
+    $xl.Visible = $false
+    $xl.DisplayAlerts = $false
+    $ExcelWorkerState['Ready'] = $true
+    Queue-WorkerLog "Hidden Excel khoi dong"
+
+    foreach ($batch in $ExcelQueue.GetConsumingEnumerable()) {
+        $ExcelWorkerState['Busy'] = $true
+        try {
+            Flush-Batch -Batch $batch -ExcelApp $xl
+        } catch {
+            Queue-WorkerLog "LOI flush (se thu lai): $_"
+        } finally {
+            $ExcelWorkerState['Busy'] = $false
+        }
+    }
+} catch {
+    $ExcelWorkerState['Ready'] = $true
+    Queue-WorkerLog "LOI khoi dong Hidden Excel: $_"
+} finally {
+    if ($null -ne $xl) {
+        try { Invoke-ComMethod -ComObject $xl -MethodName Quit | Out-Null } catch {}
+        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($xl) | Out-Null } catch {}
+        [GC]::Collect()
+    }
+    $ExcelWorkerState['Stopped'] = $true
+}
+'@
+
+    $script:excelWorkerPowerShell = [powershell]::Create()
+    $script:excelWorkerPowerShell.Runspace = $script:excelWorkerRunspace
+    [void]$script:excelWorkerPowerShell.AddScript($workerScript)
+    $script:excelWorkerHandle = $script:excelWorkerPowerShell.BeginInvoke()
+}
+
+function Wait-ExcelWorkerReady {
+    param([int]$TimeoutMs = 15000)
+    $deadline = [DateTime]::Now.AddMilliseconds($TimeoutMs)
+    while ([DateTime]::Now -lt $deadline) {
+        Flush-ExcelWorkerLogs
+        if ($script:excelWorkerState['Ready']) { return $true }
+        Start-Sleep -Milliseconds 100
+    }
+    Flush-ExcelWorkerLogs
+    return [bool]$script:excelWorkerState['Ready']
+}
+
+function Queue-ExcelFlush {
+    param(
+        [string]$Path,
+        [string[]]$Barcodes,
+        [string[]]$Scanners,
+        [int[]]$Cols,
+        [string]$SheetDate
+    )
+
+    if ($null -eq $script:excelQueue -or $script:excelQueue.IsAddingCompleted) {
+        throw "Excel worker khong san sang"
+    }
+
+    $batch = [pscustomobject]@{
+        Path      = [System.IO.Path]::GetFullPath($Path)
+        Barcodes  = @($Barcodes)
+        Scanners  = @($Scanners)
+        Cols      = @($Cols)
+        SheetDate = $SheetDate
+    }
+    $script:excelQueue.Add($batch)
+}
+
+function Wait-ExcelWorkerIdle {
+    param([int]$TimeoutMs = 15000)
+    $deadline = [DateTime]::Now.AddMilliseconds($TimeoutMs)
+    while ([DateTime]::Now -lt $deadline) {
+        Flush-ExcelWorkerLogs
+        if ($script:excelQueue.Count -eq 0 -and -not [bool]$script:excelWorkerState['Busy']) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    Flush-ExcelWorkerLogs
+    return ($script:excelQueue.Count -eq 0 -and -not [bool]$script:excelWorkerState['Busy'])
+}
+
+function Stop-ExcelWorker {
+    if ($null -eq $script:excelWorkerPowerShell) { return }
+
+    try {
+        if (-not $script:excelQueue.IsAddingCompleted) {
+            $script:excelQueue.CompleteAdding()
+        }
+    } catch {}
+
+    if ($null -ne $script:excelWorkerHandle) {
+        $null = $script:excelWorkerHandle.AsyncWaitHandle.WaitOne(15000)
+        if ($script:excelWorkerHandle.IsCompleted) {
+            try { $script:excelWorkerPowerShell.EndInvoke($script:excelWorkerHandle) | Out-Null } catch { Write-Log "Loi worker khi dung: $_" }
+        } else {
+            Write-Log "Canh bao: Excel worker khong dung kip trong 15s"
+        }
+    }
+
+    Flush-ExcelWorkerLogs
+
+    try { $script:excelWorkerPowerShell.Dispose() } catch {}
+    try { $script:excelWorkerRunspace.Dispose() } catch {}
+    try { $script:excelQueue.Dispose() } catch {}
+
+    $script:excelQueue            = $null
+    $script:excelLogQueue         = $null
+    $script:excelWorkerState      = $null
+    $script:excelWorkerRunspace   = $null
+    $script:excelWorkerPowerShell = $null
+    $script:excelWorkerHandle     = $null
+}
+
 # ----------------------------------------------------------------
 # Hidden Excel: giu app + workbook mo giua cac lan flush
 # ----------------------------------------------------------------
@@ -546,8 +1078,18 @@ function Get-HiddenExcel {
 
 function Close-HiddenWorkbook {
     if ($null -ne $script:wb) {
-        try { $script:wb.Save() } catch {}
-        try { $script:wb.Close($false) } catch {}
+        try { 
+            # Check if workbook is in read-only mode and try to disable it
+            if ($script:wb.ReadOnly) {
+                Write-Log "Canh bao: Workbook dang o che do read-only, dong va thap lai..."
+                Invoke-ComMethod -ComObject $script:wb -MethodName Close -Arguments @($false) | Out-Null
+                $script:wb = $null
+                Start-Sleep -Milliseconds 500
+                return
+            }
+            Invoke-ComMethod -ComObject $script:wb -MethodName Save | Out-Null
+        } catch { Write-Log "Canh bao khi save trong Close-HiddenWorkbook: $_" }
+        try { Invoke-ComMethod -ComObject $script:wb -MethodName Close -Arguments @($false) | Out-Null } catch {}
         try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:wb) | Out-Null } catch {}
         $script:wb = $null
     }
@@ -560,17 +1102,29 @@ function Get-HiddenWorkbook {
         try { $null = $script:wb.Name } catch { $script:wb = $null }
     }
     if ($null -eq $script:wb) {
+        Ensure-FileWritable -FilePath $Path
+        $workbooks = $xl.Workbooks
         if (Test-Path $Path) {
-            $script:wb = $xl.Workbooks.Open($Path)
+            # Open with UpdateLinks=0 to avoid prompts, ReadOnly=$false to ensure writable
+            $script:wb = Invoke-ComMethod -ComObject $workbooks -MethodName Open -Arguments @($Path, 0, $false)
+            # Double-check: disable ReadOnly on workbook if Excel set it
+            if ($script:wb.ReadOnly) {
+                Invoke-ComMethod -ComObject $script:wb -MethodName Close -Arguments @($false) | Out-Null
+                [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:wb) | Out-Null
+                $script:wb = $null
+                # Try opening again with different parameters
+                Ensure-FileWritable -FilePath $Path
+                $script:wb = Invoke-ComMethod -ComObject $workbooks -MethodName Open -Arguments @($Path, 0, $false)
+            }
         } else {
-            $script:wb = $xl.Workbooks.Add()
+            $script:wb = Invoke-ComMethod -ComObject $workbooks -MethodName Add
             $script:wb.Sheets.Item(1).Name                          = $SheetDate
             $script:wb.Sheets.Item(1).Cells.Item(1,1)              = "STT"
             $script:wb.Sheets.Item(1).Cells.Item(1,2)              = "Thoi gian"
             $script:wb.Sheets.Item(1).Rows.Item(1).Font.Bold       = $true
             $script:wb.Sheets.Item(1).Columns.Item(1).ColumnWidth  = 6
             $script:wb.Sheets.Item(1).Columns.Item(2).ColumnWidth  = 22
-            $script:wb.SaveAs($Path, 51)
+            Invoke-ComMethod -ComObject $script:wb -MethodName SaveAs -Arguments @($Path, 51) | Out-Null
         }
     }
     return $script:wb
@@ -603,9 +1157,9 @@ function Find-OrCreateSheet {
     }
     $mv = [System.Reflection.Missing]::Value
     if ($null -ne $insertBefore) {
-        $ws = $Workbook.Sheets.Add($insertBefore, $mv, $mv, $mv)
+        $ws = Invoke-ComMethod -ComObject $Workbook.Sheets -MethodName Add -Arguments @($insertBefore, $mv, $mv, $mv)
     } else {
-        $ws = $Workbook.Sheets.Add($mv, $Workbook.Sheets.Item($cnt), $mv, $mv)
+        $ws = Invoke-ComMethod -ComObject $Workbook.Sheets -MethodName Add -Arguments @($mv, $Workbook.Sheets.Item($cnt), $mv, $mv)
     }
     $ws.Name                         = $SheetName
     $ws.Cells.Item(1,1)              = "STT"
@@ -620,6 +1174,7 @@ function Flush-ToExcel {
     param([string]$Path, [string[]]$Barcodes, [string[]]$Scanners, [int[]]$Cols, [string]$SheetDate)
 
     $timestamps = $Barcodes | ForEach-Object { Get-Date -Format "yyyy-MM-dd HH:mm:ss" }
+    Ensure-FileWritable -FilePath $Path
     $firstStt   = [ExcelFinder]::AppendBarcodes($Path, $timestamps, $Barcodes, $Scanners, $Cols, $SheetDate)
     if ($firstStt -ge 0) {
         # Live Excel dang mo → dong hidden wb tranh file lock conflict
@@ -654,7 +1209,62 @@ function Flush-ToExcel {
         Write-Log "[$($Scanners[$i])] Ghi STT ${stt}: $($Barcodes[$i])"
     }
 
-    $wb.Save()
+    # Try save with retry logic - use SaveAs as fallback
+    $saveOk = $false
+    for ($retry = 0; $retry -lt 3; $retry++) {
+        try {
+            Ensure-FileWritable -FilePath $Path
+            
+            # Try regular Save first
+            Invoke-ComMethod -ComObject $wb -MethodName Save | Out-Null
+            $saveOk = $true
+            Write-Log "OK: Luu file thanh cong"
+            break
+        } catch {
+            Write-Log "Canh bao: Loi Save (lan $($retry+1)/3): $_"
+            
+            # If regular Save fails, try SaveAs with explicit parameters
+            if ($retry -eq 1) {
+                try {
+                    Write-Log "Thu SaveAs voi xlOpenXMLWorkbook..."
+                    Ensure-FileWritable -FilePath $Path
+                    # SaveAs: FileName, FileFormat, Password, WriteResPassword, ReadOnlyRecommended, CreateBackup, AccessMode
+                    # AccessMode: 1=xlShared, 2=xlExclusive
+                    Invoke-ComMethod -ComObject $wb -MethodName SaveAs -Arguments @($Path, 51, "", "", $false, $false, 1) | Out-Null  # 51 = xlOpenXMLWorkbook, 1 = xlShared
+                    $saveOk = $true
+                    Write-Log "OK: SaveAs thanh cong"
+                    break
+                } catch {
+                    Write-Log "SaveAs cung that bai: $_"
+                }
+            }
+            
+            # If both fail, close and retry with fresh workbook
+            if ($retry -lt 2) {
+                Write-Log "Dong workbook va thu lai..."
+                Close-HiddenWorkbook
+                $script:wb = $null
+                Start-Sleep -Milliseconds 500
+                $wb = Get-HiddenWorkbook -Path $Path -SheetDate $SheetDate
+                $ws = Find-OrCreateSheet -Workbook $wb -SheetName $SheetDate
+            } else {
+                # Last resort: try SaveAs with xlWorkbookDefault format
+                try {
+                    Write-Log "Thu SaveAs voi xlWorkbookDefault (format 56)..."
+                    Ensure-FileWritable -FilePath $Path
+                    Invoke-ComMethod -ComObject $wb -MethodName SaveAs -Arguments @($Path, 56) | Out-Null  # 56 = xlWorkbookDefault
+                    $saveOk = $true
+                    Write-Log "OK: SaveAs (format 56) thanh cong"
+                } catch {
+                    Write-Log "SaveAs format 56 that bai: $_"
+                }
+            }
+        }
+    }
+    
+    if (-not $saveOk) {
+        Write-Log "LOI: Khong the save file sau $($retry+1) lan thu"
+    }
 }
 
 # ----------------------------------------------------------------
@@ -663,8 +1273,43 @@ function Flush-ToExcel {
 $script:pendingBarcodes = [System.Collections.Generic.List[string]]::new()
 $script:pendingScanners = [System.Collections.Generic.List[string]]::new()
 $script:pendingCols     = [System.Collections.Generic.List[int]]::new()
-$script:lastFlush       = [DateTime]::Now
+$script:lastInputAt     = [DateTime]::MinValue
+$script:cleanupStarted  = $false
+$script:testInjectQueueFile = Join-Path $PSScriptRoot "test_inject.queue"
 $FLUSH_INTERVAL_MS      = 200
+
+function Add-PendingEntry {
+    param([string]$Entry)
+    $tabIdx = $Entry.IndexOf("`t")
+    if ($tabIdx -lt 0) { return }
+    $meta    = $Entry.Substring(0, $tabIdx)   # "name|colIdx"
+    $barcode = $Entry.Substring($tabIdx + 1)
+    $pipeIdx = $meta.LastIndexOf('|')
+    if ($pipeIdx -lt 0 -or [string]::IsNullOrWhiteSpace($barcode)) { return }
+    $displayName = $meta.Substring(0, $pipeIdx)
+    $colIdx      = [int]$meta.Substring($pipeIdx + 1)
+    $script:pendingBarcodes.Add($barcode)
+    $script:pendingScanners.Add($displayName)
+    $script:pendingCols.Add($colIdx)
+    $script:lastInputAt = [DateTime]::Now
+}
+
+function Drain-TestInjectQueue {
+    if (-not (Test-Path $script:testInjectQueueFile)) { return @() }
+
+    $processingFile = "$($script:testInjectQueueFile).$([guid]::NewGuid().ToString('N')).processing"
+    try {
+        Move-Item -LiteralPath $script:testInjectQueueFile -Destination $processingFile -ErrorAction Stop
+    } catch {
+        return @()
+    }
+
+    try {
+        return @(Get-Content -LiteralPath $processingFile -ErrorAction SilentlyContinue)
+    } finally {
+        Remove-Item -LiteralPath $processingFile -Force -ErrorAction SilentlyContinue
+    }
+}
 
 # ----------------------------------------------------------------
 # Khoi dong
@@ -675,14 +1320,62 @@ try { [System.IO.File]::WriteAllText($LogFile, "", [System.Text.Encoding]::UTF8)
 Write-Log "=== USB Reader khoi dong | ScannerSpeed: ${ScannerSpeedMs}ms | MinLen: $MinBarcodeLength ==="
 Write-Log "File: $ExcelFile | Flush interval: ${FLUSH_INTERVAL_MS}ms"
 
-if (-not (Test-Path $ExcelFile)) {
-    Flush-ToExcel -Path $ExcelFile -Barcodes @() -Scanners @() -Cols @() -SheetDate (Get-SheetDate)
-    Write-Log "Tao file moi: $ExcelFile"
+Ensure-FileWritable -FilePath $ExcelFile
+Remove-Item -LiteralPath $script:testInjectQueueFile -Force -ErrorAction SilentlyContinue
+Start-ExcelWorker
+if (-not (Wait-ExcelWorkerReady -TimeoutMs 15000)) {
+    Write-Log "Canh bao: Hidden Excel khoi dong cham hoac that bai"
 }
 
+if (-not (Test-Path $ExcelFile)) {
+    Queue-ExcelFlush -Path $ExcelFile -Barcodes @() -Scanners @() -Cols @() -SheetDate (Get-SheetDate)
+    [void](Wait-ExcelWorkerIdle -TimeoutMs 15000)
+}
+
+Flush-ExcelWorkerLogs
 Write-Log "San sang."
 
-try { Get-HiddenExcel | Out-Null } catch { Write-Log "Pre-warm Excel that bai: $_" }
+# ----------------------------------------------------------------
+# Graceful Shutdown Handler
+# ================================================================
+function Invoke-Cleanup {
+    if ($script:cleanupStarted) { return }
+    $script:cleanupStarted = $true
+    Write-Log "Dang dong Excel va lam sach..."
+    
+    # Stop timer
+    if ($null -ne $timer) { $timer.Stop() }
+    
+    # Unregister Raw Input
+    [BarcodeRawInput]::Unregister()
+    [KeyboardSuppressor]::Uninstall()
+    Flush-ExcelWorkerLogs
+    
+    # Flush remaining barcodes
+    if ($script:pendingBarcodes.Count -gt 0) {
+        try {
+            Write-Log "Flush du lieu con lai ($($script:pendingBarcodes.Count) records)..."
+            Queue-ExcelFlush -Path $ExcelFile `
+                -Barcodes  $script:pendingBarcodes.ToArray() `
+                -Scanners  $script:pendingScanners.ToArray() `
+                -Cols      $script:pendingCols.ToArray() `
+                -SheetDate (Get-SheetDate)
+            $script:pendingBarcodes.Clear()
+            $script:pendingScanners.Clear()
+            $script:pendingCols.Clear()
+            [void](Wait-ExcelWorkerIdle -TimeoutMs 15000)
+        } catch { Write-Log "Loi khi flush cuoi: $_" }
+    }
+    
+    Stop-ExcelWorker
+    Flush-ExcelWorkerLogs
+    Write-Log "Da thoat."
+}
+
+# Trap Ctrl+C va System shutdown events
+$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
+    Invoke-Cleanup
+} -ErrorAction SilentlyContinue
 
 # ----------------------------------------------------------------
 # WinForms (ScannerForm de nhan WM_INPUT) + Timer
@@ -696,20 +1389,16 @@ $timer          = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
 
 $timer.Add_Tick({
+    Flush-ExcelWorkerLogs
+
     # Thu thap barcode tu queue (format: "name|colIdx\tbarcode")
     [string]$entry = $null
     while ([BarcodeRawInput]::Queue.TryDequeue([ref]$entry)) {
-        $tabIdx = $entry.IndexOf("`t")
-        if ($tabIdx -lt 0) { continue }
-        $meta    = $entry.Substring(0, $tabIdx)   # "name|colIdx"
-        $barcode = $entry.Substring($tabIdx + 1)
-        $pipeIdx = $meta.LastIndexOf('|')
-        if ($pipeIdx -lt 0 -or [string]::IsNullOrWhiteSpace($barcode)) { continue }
-        $displayName = $meta.Substring(0, $pipeIdx)
-        $colIdx      = [int]$meta.Substring($pipeIdx + 1)
-        $script:pendingBarcodes.Add($barcode)
-        $script:pendingScanners.Add($displayName)
-        $script:pendingCols.Add($colIdx)
+        Add-PendingEntry -Entry $entry
+    }
+
+    foreach ($injectEntry in (Drain-TestInjectQueue)) {
+        Add-PendingEntry -Entry $injectEntry
     }
 
     # Log thiet bi moi phat hien
@@ -725,47 +1414,35 @@ $timer.Add_Tick({
         [BarcodeRawInput]::LastSaveError = ""
     }
 
-    $elapsed = ([DateTime]::Now - $script:lastFlush).TotalMilliseconds
     if ($script:pendingBarcodes.Count -eq 0) { return }
-    if ($elapsed -lt $FLUSH_INTERVAL_MS -and $script:pendingBarcodes.Count -lt 10) { return }
+    $idleMs = ([DateTime]::Now - $script:lastInputAt).TotalMilliseconds
+    if ($idleMs -lt $FLUSH_INTERVAL_MS -and $script:pendingBarcodes.Count -lt 10) { return }
 
     try {
         $batchBarcodes = $script:pendingBarcodes.ToArray()
         $batchScanners = $script:pendingScanners.ToArray()
         $batchCols     = $script:pendingCols.ToArray()
-        Flush-ToExcel -Path $ExcelFile -Barcodes $batchBarcodes -Scanners $batchScanners -Cols $batchCols -SheetDate (Get-SheetDate)
+        Queue-ExcelFlush -Path $ExcelFile -Barcodes $batchBarcodes -Scanners $batchScanners -Cols $batchCols -SheetDate (Get-SheetDate)
         $script:pendingBarcodes.Clear()
         $script:pendingScanners.Clear()
         $script:pendingCols.Clear()
-        $script:lastFlush = [DateTime]::Now
     } catch {
         Write-Log "LOI flush (se thu lai): $_"
     }
 })
 
 $form.Add_FormClosed({
-    $timer.Stop()
-    [BarcodeRawInput]::Unregister()
-    if ($script:pendingBarcodes.Count -gt 0) {
-        try {
-            Flush-ToExcel -Path $ExcelFile `
-                -Barcodes   $script:pendingBarcodes.ToArray() `
-                -Scanners   $script:pendingScanners.ToArray() `
-                -Cols       $script:pendingCols.ToArray() `
-                -SheetDate  (Get-SheetDate)
-        } catch {}
-    }
-    Close-HiddenWorkbook
-    if ($null -ne $script:xl) {
-        try { $script:xl.Quit() } catch {}
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:xl) | Out-Null
-        [GC]::Collect()
-    }
-    Write-Log "Da thoat."
+    Invoke-Cleanup
 })
 
 [BarcodeRawInput]::LoadMap("$PSScriptRoot\scanner_map.txt")
 [BarcodeRawInput]::Register($form.Handle, $ScannerSpeedMs, $MinBarcodeLength)
+[KeyboardSuppressor]::Install($ScannerSpeedMs)
+if ([KeyboardSuppressor]::LastError) {
+    Write-Log "CANH BAO: Keyboard suppress that bai: $([KeyboardSuppressor]::LastError)"
+} else {
+    Write-Log "Keyboard suppress: bat (threshold=${ScannerSpeedMs}ms, Ctrl/Alt/Win mien tru)"
+}
 
 $timer.Start()
 Write-Log "Dang lang nghe ma vach (Raw Input)..."
