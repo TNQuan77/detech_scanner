@@ -518,6 +518,16 @@ public class KeyboardSuppressor {
     [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
     private static extern IntPtr GetModuleHandle(string name);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT {
+        public uint   vkCode;
+        public uint   scanCode;
+        public uint   flags;
+        public uint   time;
+        public IntPtr dwExtraInfo;
+    }
+    private const uint LLKHF_INJECTED = 0x10;  // phim gia lap (SendInput/SendKeys)
+
     public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     private static IntPtr                _hook      = IntPtr.Zero;
@@ -543,7 +553,13 @@ public class KeyboardSuppressor {
 
     private static IntPtr Callback(int nCode, IntPtr wParam, IntPtr lParam) {
         if (nCode >= 0 && ((int)wParam == WM_KEYDOWN || (int)wParam == WM_SYSKEYDOWN)) {
-            // Ctrl / Alt / Win đang giữ → pass through, không chặn
+            var ks = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+
+            // Phim gia lap (SendInput / SendKeys) → pass through, khong tinh vao timing
+            if ((ks.flags & LLKHF_INJECTED) != 0)
+                return CallNextHookEx(_hook, nCode, wParam, lParam);
+
+            // Ctrl / Alt / Win dang giu → pass through
             bool modified = (GetKeyState(0x11) & 0x8000) != 0   // Ctrl
                          || (GetKeyState(0x12) & 0x8000) != 0   // Alt
                          || (GetKeyState(0x5B) & 0x8000) != 0   // LWin
@@ -555,7 +571,7 @@ public class KeyboardSuppressor {
 
                 if (gap < _threshold || (_scanMode && gap < _idleMs)) {
                     _scanMode = true;
-                    return (IntPtr)1;   // suppress
+                    return (IntPtr)1;   // suppress hardware scanner
                 }
                 _scanMode = false;
             }
