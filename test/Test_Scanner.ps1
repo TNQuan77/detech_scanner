@@ -29,21 +29,40 @@ function Send-Barcodes {
     }
 }
 
+function Get-LogLineCount {
+    if (-not (Test-Path $logFile)) { return 0 }
+    return @(Get-Content $logFile -ErrorAction SilentlyContinue).Count
+}
+
 function Wait-ForFlush {
-    param([int]$TimeoutSec = 15)
-    Write-Host "  Chap Excel dong file..." -NoNewline
+    param(
+        [string[]]$Codes,
+        [int]$StartLine = 0,
+        [int]$TimeoutSec = 15
+    )
+    Write-Host "  Chap Excel ghi xong..." -NoNewline
     $deadline = [DateTime]::Now.AddSeconds($TimeoutSec)
     
-    # Wait for Excel to finish flushing (look for "Da thoat" in log or timeout)
+    # Wait for the newly queued batch to be consumed and written.
     while ([DateTime]::Now -lt $deadline) {
+        $queueDrained = -not (Test-Path $injectFile)
         if (Test-Path $logFile) {
-            $content = Get-Content $logFile -ErrorAction SilentlyContinue | Select-Object -Last 5
-            if ($content -match "Da thoat") { Write-Host " OK"; return }
+            $content = @(Get-Content $logFile -ErrorAction SilentlyContinue | Select-Object -Skip $StartLine)
+            $saveOk  = @($content | Select-String -Pattern "OK: Luu file thanh cong").Count -gt 0
+            $saveErr = @($content | Select-String -Pattern "LOI flush|LOI khoi dong Hidden Excel").Count -gt 0
+            if ($queueDrained -and ($saveOk -or $saveErr)) {
+                if ($saveErr) {
+                    Write-Host " CO LOI (xem log)"
+                } else {
+                    Write-Host " OK"
+                }
+                return
+            }
         }
         Write-Host "." -NoNewline
         Start-Sleep -Milliseconds 500
     }
-    Write-Host " TIMEOUT (se dong by force)"
+    Write-Host " TIMEOUT"
 }
 
 $logFile = Join-Path $srcDir "USB_Reader.log"
@@ -100,24 +119,27 @@ if ($TestDateChange) {
     Stop-MainScript
     Start-MainScript -SimDate $lastMonth
     Wait-ForReady
+    $logCursor = Get-LogLineCount
     Send-Barcodes -Codes $Barcodes
-    Wait-ForFlush
+    Wait-ForFlush -Codes $Barcodes -StartLine $logCursor
 
     Write-Host ""
     Write-Host "Buoc 2: Gia lap thang nay ($thisMonth)"
     Stop-MainScript
     Start-MainScript -SimDate $thisMonth
     Wait-ForReady
+    $logCursor = Get-LogLineCount
     Send-Barcodes -Codes $Barcodes
-    Wait-ForFlush
+    Wait-ForFlush -Codes $Barcodes -StartLine $logCursor
 
     Write-Host ""
     Write-Host "Buoc 3: Gia lap thang sau ($nextMonth)"
     Stop-MainScript
     Start-MainScript -SimDate $nextMonth
     Wait-ForReady
+    $logCursor = Get-LogLineCount
     Send-Barcodes -Codes $Barcodes
-    Wait-ForFlush
+    Wait-ForFlush -Codes $Barcodes -StartLine $logCursor
 
     Write-Host ""
     Write-Host "Xong! Mo file Excel kiem tra thu tu sheet (trai->phai): '$lastMonth' | '$thisMonth' | '$nextMonth'"
@@ -128,8 +150,9 @@ if ($TestDateChange) {
     Stop-MainScript
     Start-MainScript -SimDate $Date
     Wait-ForReady
+    $logCursor = Get-LogLineCount
     Send-Barcodes -Codes $Barcodes
-    Wait-ForFlush
+    Wait-ForFlush -Codes $Barcodes -StartLine $logCursor
     Stop-MainScript
     Write-Host "Xong!"
 
