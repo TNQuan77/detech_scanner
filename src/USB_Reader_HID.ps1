@@ -132,14 +132,23 @@ public class ExcelFinder {
                         object hdrCell = Get(cells, "Item", new object[] { 1, scanCol });
                         object hdrVal  = null;
                         try { hdrVal = Get(hdrCell, "Value"); } catch {}
-                        if (hdrVal == null || string.IsNullOrWhiteSpace(hdrVal.ToString()))
+                        if (hdrVal == null || string.IsNullOrWhiteSpace(hdrVal.ToString())) {
                             Set(hdrCell, "Value", new object[] { scannerNames[i] });
+                            // Format toan bo cot scanner la Text de tranh scientific notation
+                            object scannerCol = Get(Get(ws, "Columns"), "Item", new object[] { scanCol });
+                            Set(scannerCol, "NumberFormat", new object[] { "@" });
+                        }
 
                         Set(Get(cells, "Item", new object[] { nextRow, 1 }), "Value", new object[] { nextRow - 1 });
                         Set(Get(cells, "Item", new object[] { nextRow, 2 }), "Value", new object[] { timestamps[i] });
-                        Set(Get(cells, "Item", new object[] { nextRow, scanCol }), "Value", new object[] { barcodes[i] });
+                        object barCell = Get(cells, "Item", new object[] { nextRow, scanCol });
+                        Set(barCell, "NumberFormat", new object[] { "@" });
+                        Set(barCell, "Value", new object[] { barcodes[i] });
                         nextRow++;
                     }
+
+                    // AutoFit tat ca cot theo noi dung thuc te
+                    Call(Get(Get(ws, "UsedRange"), "Columns"), "AutoFit");
 
                     Call(wb, "Save");
                     return firstStt;
@@ -610,19 +619,22 @@ function Flush-ToExcel {
             $scanCol = 2 + $Cols[$i]
 
             if ([string]::IsNullOrWhiteSpace($ws.Cells.Item(1, $scanCol).Value2)) {
-                $ws.Cells.Item(1, $scanCol)            = $Scanners[$i]
-                $ws.Columns.Item($scanCol).ColumnWidth = 40
-                $ws.Cells.Item(1, $scanCol).Font.Bold  = $true
+                $ws.Cells.Item(1, $scanCol)             = $Scanners[$i]
+                $ws.Columns.Item($scanCol).NumberFormat = "@"
+                $ws.Cells.Item(1, $scanCol).Font.Bold   = $true
             }
 
             $ts  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             $stt = $nextRow - 1
-            $ws.Cells.Item($nextRow, 1)        = $stt
-            $ws.Cells.Item($nextRow, 2)        = $ts
-            $ws.Cells.Item($nextRow, $scanCol) = $Barcodes[$i]
+            $ws.Cells.Item($nextRow, 1)                     = $stt
+            $ws.Cells.Item($nextRow, 2)                     = $ts
+            $ws.Cells.Item($nextRow, $scanCol).NumberFormat = "@"
+            $ws.Cells.Item($nextRow, $scanCol).Value2       = $Barcodes[$i]
             $nextRow++
             Write-Log "[$($Scanners[$i])] Ghi STT ${stt}: $($Barcodes[$i])"
         }
+
+        $ws.UsedRange.Columns.AutoFit() | Out-Null
 
         $wb.Save()
 
