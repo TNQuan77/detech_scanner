@@ -500,85 +500,6 @@ public class ScannerForm : System.Windows.Forms.Form {
     }
 }
 
-// Chặn keystroke của scanner khỏi các app khác bằng WH_KEYBOARD_LL
-// Cùng process với Raw Input → không block WM_INPUT delivery
-public class KeyboardSuppressor {
-    private const int WH_KEYBOARD_LL = 13;
-    private const int WM_KEYDOWN     = 0x0100;
-    private const int WM_SYSKEYDOWN  = 0x0104;
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc fn, IntPtr hMod, uint tid);
-    [DllImport("user32.dll")]
-    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
-    [DllImport("user32.dll")]
-    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32.dll")]
-    private static extern short GetKeyState(int vk);
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
-    private static extern IntPtr GetModuleHandle(string name);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct KBDLLHOOKSTRUCT {
-        public uint   vkCode;
-        public uint   scanCode;
-        public uint   flags;
-        public uint   time;
-        public IntPtr dwExtraInfo;
-    }
-    private const uint LLKHF_INJECTED = 0x10;  // phim gia lap (SendInput/SendKeys)
-
-    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
-
-    private static IntPtr                _hook      = IntPtr.Zero;
-    private static LowLevelKeyboardProc  _proc;       // prevent GC
-    private static DateTime              _lastKey   = DateTime.MinValue;
-    private static bool                  _scanMode  = false;
-    private static int                   _threshold = 50;
-    private static int                   _idleMs    = 300;
-    public  static string                LastError  = "";
-
-    public static void Install(int thresholdMs) {
-        _threshold = thresholdMs;
-        _idleMs    = Math.Max(300, thresholdMs * 6);
-        _proc      = Callback;
-        _hook      = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
-        if (_hook == IntPtr.Zero)
-            LastError = "SetWindowsHookEx failed: " + Marshal.GetLastWin32Error();
-    }
-
-    public static void Uninstall() {
-        if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; }
-    }
-
-    private static IntPtr Callback(int nCode, IntPtr wParam, IntPtr lParam) {
-        if (nCode >= 0 && ((int)wParam == WM_KEYDOWN || (int)wParam == WM_SYSKEYDOWN)) {
-            var ks = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
-
-            // Phim gia lap (SendInput / SendKeys) → pass through, khong tinh vao timing
-            if ((ks.flags & LLKHF_INJECTED) != 0)
-                return CallNextHookEx(_hook, nCode, wParam, lParam);
-
-            // Ctrl / Alt / Win dang giu → pass through
-            bool modified = (GetKeyState(0x11) & 0x8000) != 0   // Ctrl
-                         || (GetKeyState(0x12) & 0x8000) != 0   // Alt
-                         || (GetKeyState(0x5B) & 0x8000) != 0   // LWin
-                         || (GetKeyState(0x5C) & 0x8000) != 0;  // RWin
-            if (!modified) {
-                double gap = _lastKey == DateTime.MinValue ? 99999
-                           : (DateTime.Now - _lastKey).TotalMilliseconds;
-                _lastKey = DateTime.Now;
-
-                if (gap < _threshold || (_scanMode && gap < _idleMs)) {
-                    _scanMode = true;
-                    return (IntPtr)1;   // suppress hardware scanner
-                }
-                _scanMode = false;
-            }
-        }
-        return CallNextHookEx(_hook, nCode, wParam, lParam);
-    }
-}
 "@ -Language CSharp -ReferencedAssemblies "System.Windows.Forms"
 
 # ----------------------------------------------------------------
@@ -733,7 +654,7 @@ $script:pendingBarcodes = [System.Collections.Generic.List[string]]::new()
 $script:pendingScanners = [System.Collections.Generic.List[string]]::new()
 $script:pendingCols     = [System.Collections.Generic.List[int]]::new()
 $script:lastFlush       = [DateTime]::Now
-$FLUSH_INTERVAL_MS      = 2000
+$FLUSH_INTERVAL_MS      = 500
 
 # ----------------------------------------------------------------
 # Khoi dong
@@ -814,7 +735,6 @@ $timer.Add_Tick({
 
 $form.Add_FormClosed({
     $timer.Stop()
-    [KeyboardSuppressor]::Uninstall()
     [BarcodeRawInput]::Unregister()
     if ($script:pendingBarcodes.Count -gt 0) {
         try {
@@ -835,13 +755,6 @@ $form.Add_FormClosed({
 
 [BarcodeRawInput]::LoadMap("$PSScriptRoot\scanner_map.txt")
 [BarcodeRawInput]::Register($form.Handle, $ScannerSpeedMs, $MinBarcodeLength)
-
-[KeyboardSuppressor]::Install($ScannerSpeedMs)
-if ([KeyboardSuppressor]::LastError) {
-    Write-Log "CANH BAO: Keyboard hook that bai: $([KeyboardSuppressor]::LastError)"
-} else {
-    Write-Log "Keyboard suppress ON: threshold=${ScannerSpeedMs}ms, Ctrl/Alt/Win pass-through"
-}
 
 $timer.Start()
 Write-Log "Dang lang nghe ma vach (Raw Input)..."
