@@ -44,12 +44,16 @@ _e(*) {     ; Enter — kết thúc barcode hoặc Enter bình thường
                                 ; Enter scanner  → suppress (PS đã nhận qua Raw Input)
 }
 
+; Điều kiện: chỉ bắt phím khi Ctrl / Alt / Win KHÔNG được giữ
+_noMod(*) {
+    return !GetKeyState("Ctrl") && !GetKeyState("Alt")
+        && !GetKeyState("LWin") && !GetKeyState("RWin")
+}
+
 ; ── Đăng ký hotkeys ──────────────────────────────────────────────
-; Chỉ bắt phím khi Ctrl / Alt / Win KHÔNG được giữ
 ; → Ctrl+C, Alt+F4, Win+D, v.v. hoàn toàn không bị ảnh hưởng
 
-HotIf(() => !GetKeyState("Ctrl") && !GetKeyState("Alt")
-          && !GetKeyState("LWin") && !GetKeyState("RWin"))
+HotIf(_noMod)
 
 ; Chữ số 0-9
 Loop 10 {
