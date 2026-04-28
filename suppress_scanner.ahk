@@ -45,6 +45,11 @@ _e(*) {     ; Enter — kết thúc barcode hoặc Enter bình thường
 }
 
 ; ── Đăng ký hotkeys ──────────────────────────────────────────────
+; Chỉ bắt phím khi Ctrl / Alt / Win KHÔNG được giữ
+; → Ctrl+C, Alt+F4, Win+D, v.v. hoàn toàn không bị ảnh hưởng
+
+HotIf(() => !GetKeyState("Ctrl") && !GetKeyState("Alt")
+          && !GetKeyState("LWin") && !GetKeyState("RWin"))
 
 ; Chữ số 0-9
 Loop 10 {
@@ -71,3 +76,5 @@ HotKey "*+;",    _k.Bind(":",  "+{;}")    ; Shift+; → :
 
 ; Enter
 HotKey "*Enter", _e
+
+HotIf()  ; reset — các hotkey sau (nếu có) không bị điều kiện trên
