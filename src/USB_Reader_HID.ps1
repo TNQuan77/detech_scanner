@@ -526,9 +526,10 @@ function Write-Log {
 }
 
 # ----------------------------------------------------------------
-# Hidden Excel: khoi dong 1 lan, tai su dung cho moi flush
+# Hidden Excel: giu app + workbook mo giua cac lan flush
 # ----------------------------------------------------------------
 $script:xl = $null
+$script:wb = $null   # workbook mo thuong truc, tranh open/close moi lan
 
 function Get-HiddenExcel {
     if ($null -ne $script:xl) {
@@ -541,6 +542,38 @@ function Get-HiddenExcel {
         Write-Log "Hidden Excel khoi dong"
     }
     return $script:xl
+}
+
+function Close-HiddenWorkbook {
+    if ($null -ne $script:wb) {
+        try { $script:wb.Save() } catch {}
+        try { $script:wb.Close($false) } catch {}
+        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:wb) | Out-Null } catch {}
+        $script:wb = $null
+    }
+}
+
+function Get-HiddenWorkbook {
+    param([string]$Path, [string]$SheetDate)
+    $xl = Get-HiddenExcel
+    if ($null -ne $script:wb) {
+        try { $null = $script:wb.Name } catch { $script:wb = $null }
+    }
+    if ($null -eq $script:wb) {
+        if (Test-Path $Path) {
+            $script:wb = $xl.Workbooks.Open($Path)
+        } else {
+            $script:wb = $xl.Workbooks.Add()
+            $script:wb.Sheets.Item(1).Name                          = $SheetDate
+            $script:wb.Sheets.Item(1).Cells.Item(1,1)              = "STT"
+            $script:wb.Sheets.Item(1).Cells.Item(1,2)              = "Thoi gian"
+            $script:wb.Sheets.Item(1).Rows.Item(1).Font.Bold       = $true
+            $script:wb.Sheets.Item(1).Columns.Item(1).ColumnWidth  = 6
+            $script:wb.Sheets.Item(1).Columns.Item(2).ColumnWidth  = 22
+            $script:wb.SaveAs($Path, 51)
+        }
+    }
+    return $script:wb
 }
 
 # ----------------------------------------------------------------
@@ -589,62 +622,39 @@ function Flush-ToExcel {
     $timestamps = $Barcodes | ForEach-Object { Get-Date -Format "yyyy-MM-dd HH:mm:ss" }
     $firstStt   = [ExcelFinder]::AppendBarcodes($Path, $timestamps, $Barcodes, $Scanners, $Cols, $SheetDate)
     if ($firstStt -ge 0) {
+        # Live Excel dang mo → dong hidden wb tranh file lock conflict
+        Close-HiddenWorkbook
         for ($i = 0; $i -lt $Barcodes.Length; $i++) {
             Write-Log "[$($Scanners[$i])] Ghi STT $($firstStt + $i): $($Barcodes[$i])"
         }
         return
     }
 
-    $wb = $null
-    try {
-        $xl = Get-HiddenExcel
+    # Khong co live Excel → dung hidden workbook (giu mo giua cac lan flush)
+    $wb = Get-HiddenWorkbook -Path $Path -SheetDate $SheetDate
+    $ws      = Find-OrCreateSheet -Workbook $wb -SheetName $SheetDate
+    $nextRow = [Math]::Max(2, $ws.UsedRange.Rows.Count + 1)
 
-        if (Test-Path $Path) {
-            $wb = $xl.Workbooks.Open($Path)
-        } else {
-            $wb  = $xl.Workbooks.Add()
-            # Dat ten sheet dau tien la ngay hom nay
-            $wb.Sheets.Item(1).Name          = $SheetDate
-            $wb.Sheets.Item(1).Cells.Item(1,1) = "STT"
-            $wb.Sheets.Item(1).Cells.Item(1,2) = "Thoi gian"
-            $wb.Sheets.Item(1).Rows.Item(1).Font.Bold      = $true
-            $wb.Sheets.Item(1).Columns.Item(1).ColumnWidth = 6
-            $wb.Sheets.Item(1).Columns.Item(2).ColumnWidth = 22
-            $wb.SaveAs($Path, 51)
+    for ($i = 0; $i -lt $Barcodes.Length; $i++) {
+        $scanCol = 2 + $Cols[$i]
+
+        if ([string]::IsNullOrWhiteSpace($ws.Cells.Item(1, $scanCol).Value2)) {
+            $ws.Cells.Item(1, $scanCol)             = $Scanners[$i]
+            $ws.Columns.Item($scanCol).NumberFormat = "@"
+            $ws.Cells.Item(1, $scanCol).Font.Bold   = $true
         }
 
-        $ws      = Find-OrCreateSheet -Workbook $wb -SheetName $SheetDate
-        $nextRow = [Math]::Max(2, $ws.UsedRange.Rows.Count + 1)
-
-        for ($i = 0; $i -lt $Barcodes.Length; $i++) {
-            $scanCol = 2 + $Cols[$i]
-
-            if ([string]::IsNullOrWhiteSpace($ws.Cells.Item(1, $scanCol).Value2)) {
-                $ws.Cells.Item(1, $scanCol)             = $Scanners[$i]
-                $ws.Columns.Item($scanCol).NumberFormat = "@"
-                $ws.Cells.Item(1, $scanCol).Font.Bold   = $true
-            }
-
-            $ts  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-            $stt = $nextRow - 1
-            $ws.Cells.Item($nextRow, 1)                     = $stt
-            $ws.Cells.Item($nextRow, 2)                     = $ts
-            $ws.Cells.Item($nextRow, $scanCol).NumberFormat = "@"
-            $ws.Cells.Item($nextRow, $scanCol).Value2       = $Barcodes[$i]
-            $nextRow++
-            Write-Log "[$($Scanners[$i])] Ghi STT ${stt}: $($Barcodes[$i])"
-        }
-
-        $ws.UsedRange.Columns.AutoFit() | Out-Null
-
-        $wb.Save()
-
-    } finally {
-        if ($null -ne $wb) {
-            try { $wb.Close($false) } catch {}
-            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($wb) | Out-Null
-        }
+        $ts  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $stt = $nextRow - 1
+        $ws.Cells.Item($nextRow, 1)                     = $stt
+        $ws.Cells.Item($nextRow, 2)                     = $ts
+        $ws.Cells.Item($nextRow, $scanCol).NumberFormat = "@"
+        $ws.Cells.Item($nextRow, $scanCol).Value2       = $Barcodes[$i]
+        $nextRow++
+        Write-Log "[$($Scanners[$i])] Ghi STT ${stt}: $($Barcodes[$i])"
     }
+
+    $wb.Save()
 }
 
 # ----------------------------------------------------------------
@@ -654,7 +664,7 @@ $script:pendingBarcodes = [System.Collections.Generic.List[string]]::new()
 $script:pendingScanners = [System.Collections.Generic.List[string]]::new()
 $script:pendingCols     = [System.Collections.Generic.List[int]]::new()
 $script:lastFlush       = [DateTime]::Now
-$FLUSH_INTERVAL_MS      = 500
+$FLUSH_INTERVAL_MS      = 200
 
 # ----------------------------------------------------------------
 # Khoi dong
@@ -745,6 +755,7 @@ $form.Add_FormClosed({
                 -SheetDate  (Get-SheetDate)
         } catch {}
     }
+    Close-HiddenWorkbook
     if ($null -ne $script:xl) {
         try { $script:xl.Quit() } catch {}
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:xl) | Out-Null
