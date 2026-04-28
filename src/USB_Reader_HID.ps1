@@ -590,89 +590,6 @@ public class ScannerForm : System.Windows.Forms.Form {
     }
 }
 
-// Chan keystroke cua scanner khoi cac app khac / UniKey bang WH_KEYBOARD_LL
-// Raw Input van tiep tuc nhan du lieu nen script tu decode barcode.
-public class KeyboardSuppressor {
-    private const int WH_KEYBOARD_LL = 13;
-    private const int WM_KEYDOWN     = 0x0100;
-    private const int WM_SYSKEYDOWN  = 0x0104;
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc fn, IntPtr hMod, uint tid);
-    [DllImport("user32.dll")]
-    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
-    [DllImport("user32.dll")]
-    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32.dll")]
-    private static extern short GetKeyState(int vk);
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
-    private static extern IntPtr GetModuleHandle(string name);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct KBDLLHOOKSTRUCT {
-        public uint   vkCode;
-        public uint   scanCode;
-        public uint   flags;
-        public uint   time;
-        public IntPtr dwExtraInfo;
-    }
-
-    private const uint LLKHF_INJECTED = 0x10;
-
-    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
-
-    private static IntPtr               _hook      = IntPtr.Zero;
-    private static LowLevelKeyboardProc _proc;
-    private static DateTime             _lastKey   = DateTime.MinValue;
-    private static bool                 _scanMode  = false;
-    private static int                  _threshold = 50;
-    private static int                  _idleMs    = 300;
-    public static string                LastError  = "";
-
-    public static void Install(int thresholdMs) {
-        _threshold = thresholdMs;
-        _idleMs    = Math.Max(300, thresholdMs * 6);
-        _proc      = Callback;
-        _hook      = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
-        if (_hook == IntPtr.Zero)
-            LastError = "SetWindowsHookEx failed: " + Marshal.GetLastWin32Error();
-    }
-
-    public static void Uninstall() {
-        if (_hook != IntPtr.Zero) {
-            UnhookWindowsHookEx(_hook);
-            _hook = IntPtr.Zero;
-        }
-    }
-
-    private static IntPtr Callback(int nCode, IntPtr wParam, IntPtr lParam) {
-        if (nCode >= 0 && ((int)wParam == WM_KEYDOWN || (int)wParam == WM_SYSKEYDOWN)) {
-            var ks = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
-
-            // Phim gia lap (SendInput / SendKeys) -> pass through de test script van chay.
-            if ((ks.flags & LLKHF_INJECTED) != 0)
-                return CallNextHookEx(_hook, nCode, wParam, lParam);
-
-            // Neu dang giu Ctrl / Alt / Win thi khong chan.
-            bool modified = (GetKeyState(0x11) & 0x8000) != 0
-                         || (GetKeyState(0x12) & 0x8000) != 0
-                         || (GetKeyState(0x5B) & 0x8000) != 0
-                         || (GetKeyState(0x5C) & 0x8000) != 0;
-            if (!modified) {
-                double gap = _lastKey == DateTime.MinValue ? 99999
-                           : (DateTime.Now - _lastKey).TotalMilliseconds;
-                _lastKey = DateTime.Now;
-
-                if (gap < _threshold || (_scanMode && gap < _idleMs)) {
-                    _scanMode = true;
-                    return (IntPtr)1;
-                }
-                _scanMode = false;
-            }
-        }
-        return CallNextHookEx(_hook, nCode, wParam, lParam);
-    }
-}
 
 "@ -Language CSharp -ReferencedAssemblies "System.Windows.Forms" -ErrorAction Stop
 
@@ -1359,7 +1276,6 @@ function Invoke-Cleanup {
     
     # Unregister Raw Input
     [BarcodeRawInput]::Unregister()
-    [KeyboardSuppressor]::Uninstall()
     Flush-ExcelWorkerLogs
     
     # Flush remaining barcodes
@@ -1457,12 +1373,6 @@ $form.Add_FormClosed({
 
 [BarcodeRawInput]::LoadMap("$PSScriptRoot\scanner_map.txt")
 [BarcodeRawInput]::Register($form.Handle, $ScannerSpeedMs, $MinBarcodeLength)
-[KeyboardSuppressor]::Install($ScannerSpeedMs)
-if ([KeyboardSuppressor]::LastError) {
-    Write-Log "CANH BAO: Keyboard suppress that bai: $([KeyboardSuppressor]::LastError)"
-} else {
-    Write-Log "Keyboard suppress: bat (threshold=${ScannerSpeedMs}ms, Ctrl/Alt/Win mien tru)"
-}
 
 $timer.Start()
 Write-Log "Dang lang nghe ma vach (Raw Input)..."
