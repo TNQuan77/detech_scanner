@@ -822,9 +822,9 @@ $form.Add_FormClosed({
 
 [KeyboardSuppressor]::Install($ScannerSpeedMs)
 if ([KeyboardSuppressor]::LastError) {
-    Write-Log "CANH BAO: Keyboard hook that bai — $([KeyboardSuppressor]::LastError)"
+    Write-Log "CANH BAO: Keyboard hook that bai: $([KeyboardSuppressor]::LastError)"
 } else {
-    Write-Log "Keyboard suppress: bat (threshold=${ScannerSpeedMs}ms, Ctrl/Alt/Win mien tru)"
+    Write-Log "Keyboard suppress ON: threshold=${ScannerSpeedMs}ms, Ctrl/Alt/Win pass-through"
 }
 
 $timer.Start()
