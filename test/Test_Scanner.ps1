@@ -65,22 +65,71 @@ function Wait-ForFlush {
     Write-Host " TIMEOUT"
 }
 
-$logFile = Join-Path $srcDir "USB_Reader.log"
+$logFile     = Join-Path $srcDir "USB_Reader.log"
+$simDateFile = Join-Path $srcDir "simulate_date.txt"
+
+function Set-SimDate {
+    param([string]$Date)
+    if ($Date) {
+        [System.IO.File]::WriteAllText($simDateFile, $Date, [System.Text.Encoding]::UTF8)
+    } else {
+        Remove-Item $simDateFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Assert-MainScriptRunning {
+    $running = Get-Process powershell -ErrorAction SilentlyContinue |
+        Where-Object { $_.MainWindowTitle -eq "" } |
+        Where-Object {
+            try { (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -like "*USB_Reader_HID*" } catch { $false }
+        }
+    if (-not $running) {
+        Write-Host "  [!] Script chinh chua chay. Khoi dong..." -ForegroundColor Yellow
+        Start-MainScript
+        Wait-ForReady
+    }
+}
 
 function Stop-MainScript {
-    Get-Process powershell -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowTitle -eq "" } |
-        ForEach-Object {
-            $cmdline = (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
-            if ($cmdline -like "*USB_Reader_HID*") { 
-                # First try graceful close by sending Enter to trigger exit
-                try { $_ | Stop-Process -ErrorAction SilentlyContinue } catch {}
-                Start-Sleep -Milliseconds 500
-                # Force kill if still running
-                if (-not $_.HasExited) { $_ | Stop-Process -Force -ErrorAction SilentlyContinue }
+    $signalFile = Join-Path $srcDir "stop_signal"
+
+    # Graceful stop: signal file -> main script timer se detect va goi form.Close()
+    try { [System.IO.File]::WriteAllText($signalFile, "") } catch {}
+
+    # Wait up to 5s for graceful exit
+    $deadline = [DateTime]::Now.AddSeconds(5)
+    $exited   = $false
+    while ([DateTime]::Now -lt $deadline) {
+        $running = Get-Process powershell -ErrorAction SilentlyContinue |
+            Where-Object { $_.MainWindowTitle -eq "" } |
+            Where-Object {
+                try { (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -like "*USB_Reader_HID*" } catch { $false }
             }
-        }
-    Start-Sleep -Milliseconds 2000
+        if (-not $running) { $exited = $true; break }
+        Start-Sleep -Milliseconds 200
+    }
+
+    if (-not $exited) {
+        # Force kill neu graceful shutdown that bai
+        Get-Process powershell -ErrorAction SilentlyContinue |
+            Where-Object { $_.MainWindowTitle -eq "" } |
+            ForEach-Object {
+                try {
+                    if ((Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -like "*USB_Reader_HID*") {
+                        $_ | Stop-Process -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+            }
+        Start-Sleep -Milliseconds 800
+
+        # Kill orphaned hidden Excel (Visible=false, khong co main window)
+        Get-Process excel -ErrorAction SilentlyContinue |
+            Where-Object { $_.MainWindowHandle -eq 0 } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+    }
+
+    Remove-Item $signalFile -Force -ErrorAction SilentlyContinue
 }
 
 function Start-MainScript {
@@ -114,36 +163,33 @@ if ($TestDateChange) {
     $thisMonth = Get-Date -Format "MM-yyyy"
     $nextMonth = (Get-Date).AddMonths(1).ToString("MM-yyyy")
 
-    Write-Host "=== Test thay doi thang ==="
+    Write-Host "=== Test thay doi thang (script chinh van chay) ==="
+    Assert-MainScriptRunning
+
     Write-Host "Buoc 1: Gia lap thang truoc ($lastMonth)"
-    Stop-MainScript
-    Start-MainScript -SimDate $lastMonth
-    Wait-ForReady
+    Set-SimDate $lastMonth
     $logCursor = Get-LogLineCount
     Send-Barcodes -Codes $Barcodes
     Wait-ForFlush -Codes $Barcodes -StartLine $logCursor
 
     Write-Host ""
     Write-Host "Buoc 2: Gia lap thang nay ($thisMonth)"
-    Stop-MainScript
-    Start-MainScript -SimDate $thisMonth
-    Wait-ForReady
+    Set-SimDate $thisMonth
     $logCursor = Get-LogLineCount
     Send-Barcodes -Codes $Barcodes
     Wait-ForFlush -Codes $Barcodes -StartLine $logCursor
 
     Write-Host ""
     Write-Host "Buoc 3: Gia lap thang sau ($nextMonth)"
-    Stop-MainScript
-    Start-MainScript -SimDate $nextMonth
-    Wait-ForReady
+    Set-SimDate $nextMonth
     $logCursor = Get-LogLineCount
     Send-Barcodes -Codes $Barcodes
     Wait-ForFlush -Codes $Barcodes -StartLine $logCursor
 
+    Set-SimDate ""  # Xoa override, tra ve thang thuc
+
     Write-Host ""
     Write-Host "Xong! Mo file Excel kiem tra thu tu sheet (trai->phai): '$lastMonth' | '$thisMonth' | '$nextMonth'"
-    Stop-MainScript
 
 } elseif ($Date) {
     Write-Host "=== Gia lap scanner (thang: $Date) ==="

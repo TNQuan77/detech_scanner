@@ -679,8 +679,16 @@ public class KeyboardSuppressor {
 # ----------------------------------------------------------------
 # Helper
 # ----------------------------------------------------------------
+$script:simDateFile = "$PSScriptRoot\simulate_date.txt"
+
 function Get-SheetDate {
     if ($SimulateDate) { return $SimulateDate }
+    if (Test-Path $script:simDateFile) {
+        try {
+            $d = (Get-Content $script:simDateFile -Raw -ErrorAction SilentlyContinue).Trim()
+            if ($d) { return $d }
+        } catch {}
+    }
     return (Get-Date -Format "MM-yyyy")
 }
 
@@ -899,6 +907,7 @@ function Flush-Batch {
             for ($i = 0; $i -lt $barcodes.Count; $i++) {
                 Queue-WorkerLog "[$($scanners[$i])] Ghi STT $($firstStt + $i): $($barcodes[$i])"
             }
+            Queue-WorkerLog "OK: Luu file thanh cong"
             return
         }
     }
@@ -928,6 +937,7 @@ function Flush-Batch {
             Queue-WorkerLog "[$($scanners[$i])] Ghi STT ${stt}: $($barcodes[$i])"
         }
 
+        try { Invoke-ComMethod -ComObject $ws.UsedRange.Columns -MethodName AutoFit | Out-Null } catch {}
         Invoke-ComMethod -ComObject $wb -MethodName Save | Out-Null
         if ($createdNew) {
             Queue-WorkerLog "Tao file moi: $path"
@@ -1322,6 +1332,7 @@ Write-Log "File: $ExcelFile | Flush interval: ${FLUSH_INTERVAL_MS}ms"
 
 Ensure-FileWritable -FilePath $ExcelFile
 Remove-Item -LiteralPath $script:testInjectQueueFile -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $script:simDateFile         -Force -ErrorAction SilentlyContinue
 Start-ExcelWorker
 if (-not (Wait-ExcelWorkerReady -TimeoutMs 15000)) {
     Write-Log "Canh bao: Hidden Excel khoi dong cham hoac that bai"
@@ -1388,7 +1399,16 @@ $form.WindowState   = 'Minimized'
 $timer          = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
 
+$script:stopSignalFile = "$PSScriptRoot\stop_signal"
+
 $timer.Add_Tick({
+    # Graceful stop signal (tu test script hoac shutdown)
+    if (Test-Path $script:stopSignalFile) {
+        Remove-Item $script:stopSignalFile -Force -ErrorAction SilentlyContinue
+        $form.Close()
+        return
+    }
+
     Flush-ExcelWorkerLogs
 
     # Thu thap barcode tu queue (format: "name|colIdx\tbarcode")
