@@ -65,9 +65,9 @@ HotKey "*-",     _k.Bind("-",  "-")
 HotKey "*.",     _k.Bind(".",  ".")
 HotKey "*/",     _k.Bind("/",  "/")
 HotKey "*Space", _k.Bind(" ",  "{Space}")
-HotKey "*+{=}",  _k.Bind("+",  "+{=}")    ; Shift+= → +
-HotKey "*+{-}",  _k.Bind("_",  "+{-}")    ; Shift+- → _
-HotKey "*+{;}",  _k.Bind(":",  "+{;}")    ; Shift+; → :
+HotKey "*+=",    _k.Bind("+",  "+{=}")    ; Shift+= → +
+HotKey "*+-",    _k.Bind("_",  "+{-}")    ; Shift+- → _
+HotKey "*+;",    _k.Bind(":",  "+{;}")    ; Shift+; → :
 
 ; Enter
 HotKey "*Enter", _e
