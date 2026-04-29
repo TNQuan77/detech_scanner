@@ -625,11 +625,12 @@ public class ScannerForm : System.Windows.Forms.Form {
     }
 }
 
-// WH_KEYBOARD_LL hook: chặn phím từ scanner, cho phím người dùng qua
+// WH_KEYBOARD_LL hook: chan phim tu scanner, cho phim nguoi dung qua
 // Logic:
-//   Char 1 → qua (chưa biết có phải scanner không)
-//   Char 2 đến nhanh (< threshold) → vào scan mode, gửi Backspace xoá char 1, chặn char 2..N+Enter
-//   Ngoại lệ: scanner đơn đã biết, scan liên tiếp nhanh → chặn char 1 luôn
+//   Scanner da biet: giu char 1 (khong cho vao app), doi char 2.
+//     Char 2 den nhanh -> vao scan mode, khong can Backspace.
+//     Timer het gio -> tiet char 1 lai vao app (nguoi dung go tay).
+//   Scanner chua biet (lan dau): char 1 qua, char 2 nhanh -> Backspace + scan mode.
 public class KeyboardSuppressor {
     private const int WH_KEYBOARD_LL = 13;
     private const int WM_KEYDOWN    = 0x0100;
@@ -666,7 +667,10 @@ public class KeyboardSuppressor {
     private static IntPtr _hook = IntPtr.Zero;
     private static LowLevelKeyboardProc _proc;
     private static StringBuilder _hookBuf         = new StringBuilder(256);
-    private static bool          _firstCharPending = false;
+    private static bool          _firstCharPending = false; // char 1 da qua app (unknown scanner)
+    private static bool          _holdingChar1     = false; // char 1 dang bi giu (known scanner)
+    private static uint          _pendingVk        = 0;
+    private static bool          _pendingShift     = false;
     private static bool          _inScanMode       = false;
     private static uint          _lastKeyTime       = 0;
     private static bool          _shiftDown         = false;
@@ -674,6 +678,7 @@ public class KeyboardSuppressor {
     private static string        _capturedDevice    = "";
     private static int           _thresholdMs       = 100;
     private static int           _minLen            = 3;
+    private static System.Windows.Forms.Timer _holdTimer = null;
 
     public static bool IsInstalled { get { return _hook != IntPtr.Zero; } }
 
@@ -681,6 +686,9 @@ public class KeyboardSuppressor {
         if (_hook != IntPtr.Zero) return true;
         _thresholdMs = thresholdMs;
         _minLen      = minLen;
+        _holdTimer          = new System.Windows.Forms.Timer();
+        _holdTimer.Interval = thresholdMs * 3;
+        _holdTimer.Tick    += OnHoldTimerTick;
         _proc = Callback;
         _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
         return _hook != IntPtr.Zero;
@@ -690,6 +698,34 @@ public class KeyboardSuppressor {
         if (_hook == IntPtr.Zero) return;
         UnhookWindowsHookEx(_hook);
         _hook = IntPtr.Zero;
+        if (_holdTimer != null) { _holdTimer.Stop(); _holdTimer.Dispose(); _holdTimer = null; }
+    }
+
+    // Tiet lai char 1 da giu vao app qua keybd_event (mang LLKHF_INJECTED -> hook bo qua)
+    private static void ReleaseHeldChar() {
+        if (!_holdingChar1 || _pendingVk == 0) { _holdingChar1 = false; return; }
+        uint vk    = _pendingVk;
+        bool shift = _pendingShift;
+        _holdingChar1     = false;
+        _firstCharPending = false;
+        _pendingVk        = 0;
+        _pendingShift     = false;
+        _hookBuf.Clear();
+        if (shift) keybd_event(0x10, 0, 0, UIntPtr.Zero);
+        keybd_event((byte)vk, 0, 0, UIntPtr.Zero);
+        keybd_event((byte)vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        if (shift) keybd_event(0x10, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+    }
+
+    private static void OnHoldTimerTick(object sender, EventArgs e) {
+        _holdTimer.Stop();
+        if (_holdingChar1 && !_inScanMode)
+            ReleaseHeldChar();
+        else {
+            _holdingChar1 = false;
+            _pendingVk    = 0;
+            _pendingShift = false;
+        }
     }
 
     private static void SendBackspace() {
@@ -698,6 +734,10 @@ public class KeyboardSuppressor {
     }
 
     private static void ResetScan() {
+        if (_holdTimer != null) _holdTimer.Stop();
+        _holdingChar1     = false;
+        _pendingVk        = 0;
+        _pendingShift     = false;
         _inScanMode       = false;
         _firstCharPending = false;
         _hookBuf.Clear();
@@ -725,7 +765,7 @@ public class KeyboardSuppressor {
 
         var kb = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
 
-        // Bỏ qua phím được inject (Backspace correction của chính hook này)
+        // Phim inject cua chinh hook (ReleaseHeldChar / SendBackspace) -> cho qua
         if ((kb.flags & LLKHF_INJECTED) != 0)
             return CallNextHookEx(_hook, nCode, wParam, lParam);
 
@@ -745,15 +785,17 @@ public class KeyboardSuppressor {
 
         uint now = kb.time;
 
-        // Timeout: bỏ scan nếu gap quá lớn
-        if ((_inScanMode || _firstCharPending) && _lastKeyTime != 0 && (now - _lastKeyTime) > (uint)(_thresholdMs * 4)) {
+        // Timeout: bo trang thai neu gap qua lon
+        if ((_inScanMode || _firstCharPending || _holdingChar1) && _lastKeyTime != 0
+                && (now - _lastKeyTime) > (uint)(_thresholdMs * 4)) {
+            if (_holdingChar1) ReleaseHeldChar();
             ResetScan();
         }
 
-        double elapsed   = (_lastKeyTime != 0) ? (double)(now - _lastKeyTime) : double.MaxValue;
+        double elapsed = (_lastKeyTime != 0) ? (double)(now - _lastKeyTime) : double.MaxValue;
         _lastKeyTime = now;
 
-        // ── ĐANG TRONG SCAN MODE ─────────────────────────────────────────────
+        // ── DANG TRONG SCAN MODE ─────────────────────────────────────────────
         if (_inScanMode) {
             if (vk == 13) {
                 string code = _hookBuf.ToString().Trim();
@@ -775,32 +817,35 @@ public class KeyboardSuppressor {
             return new IntPtr(1);
         }
 
-        // ── CHƯA TRONG SCAN MODE ─────────────────────────────────────────────
-
-        string lastDev = BarcodeRawInput.GetLastActiveEncoded();
-
-        // detection window rộng hơn threshold thực để bù scanner gửi hơi chậm
+        // ── CHUA TRONG SCAN MODE ─────────────────────────────────────────────
+        string lastDev  = BarcodeRawInput.GetLastActiveEncoded();
         int detectionMs = _thresholdMs * 3;
 
-        // Tối ưu scanner đơn đã biết: scan liên tiếp nhanh → chặn char 1 luôn
-        if (BarcodeRawInput.KnownScannerCount == 1 && !string.IsNullOrEmpty(lastDev) && elapsed < detectionMs) {
-            _inScanMode     = true;
-            _capturedDevice = lastDev;
-            char? chF = VkToCharUs(vk, _shiftDown, _capsOn);
-            if (chF.HasValue) _hookBuf.Append(chF.Value);
-            return new IntPtr(1);
+        // Char 2 khi char 1 da bi giu (known scanner): xac nhan scanner, khong can Backspace
+        if (_holdingChar1 && elapsed < detectionMs) {
+            if (_holdTimer != null) _holdTimer.Stop();
+            string dev = !string.IsNullOrEmpty(lastDev) ? lastDev : BarcodeRawInput.GetOrAssignLastActive();
+            if (!string.IsNullOrEmpty(dev)) {
+                _holdingChar1   = false;
+                _inScanMode     = true;
+                _capturedDevice = dev;
+                BarcodeRawInput.ClearLastActiveBuffer();
+                char? chS2 = VkToCharUs(vk, _shiftDown, _capsOn);
+                if (chS2.HasValue) _hookBuf.Append(chS2.Value);
+                return new IntPtr(1);
+            }
+            // Khong nhan biet duoc thiet bi -> giai phong char da giu
+            ReleaseHeldChar();
+            ResetScan();
+            return CallNextHookEx(_hook, nCode, wParam, lParam);
         }
 
-        // Char 2: char 1 da qua, char 2 den nhanh → xac nhan day la scanner
-        // Neu device chua biet (lan quet dau tien), goi GetOrAssignLastActive de dang ky luon
+        // Char 2 khi char 1 da qua (unknown scanner, lan dau quet): Backspace + scan mode
         if (_firstCharPending && elapsed < detectionMs) {
-            string dev = !string.IsNullOrEmpty(lastDev)
-                ? lastDev
-                : BarcodeRawInput.GetOrAssignLastActive();
+            string dev = !string.IsNullOrEmpty(lastDev) ? lastDev : BarcodeRawInput.GetOrAssignLastActive();
             if (!string.IsNullOrEmpty(dev)) {
                 _inScanMode     = true;
                 _capturedDevice = dev;
-                // _hookBuf da co char 1; gui Backspace xoa char 1 khoi app
                 SendBackspace();
                 BarcodeRawInput.ClearLastActiveBuffer();
                 char? chS2 = VkToCharUs(vk, _shiftDown, _capsOn);
@@ -809,11 +854,28 @@ public class KeyboardSuppressor {
             }
         }
 
-        // Char chậm (người dùng gõ, hoặc char 1 của scan mới) → cho qua, lưu vào buf
+        // Char moi (co the la char 1 cua scan moi, hoac nguoi dung go)
+        if (_holdingChar1) ReleaseHeldChar(); // timer chua kip ban -> giai phong thu cong
         ResetScan();
-        char? firstCh = VkToCharUs(vk, _shiftDown, _capsOn);
-        if (firstCh.HasValue) {
-            _hookBuf.Append(firstCh.Value); // lưu sẵn, char 2 xác nhận thì buf đã đủ
+
+        if (!string.IsNullOrEmpty(lastDev)) {
+            // Scanner da biet: giu char 1, doi char 2 de xac nhan
+            char? firstCh = VkToCharUs(vk, _shiftDown, _capsOn);
+            if (firstCh.HasValue) {
+                _hookBuf.Append(firstCh.Value);
+                _holdingChar1 = true;
+                _pendingVk    = vk;
+                _pendingShift = _shiftDown;
+                if (_holdTimer != null) { _holdTimer.Stop(); _holdTimer.Start(); }
+                return new IntPtr(1);
+            }
+            return CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
+
+        // Scanner chua biet: cho char 1 qua, doi char 2 nhanh de xac nhan
+        char? ch1 = VkToCharUs(vk, _shiftDown, _capsOn);
+        if (ch1.HasValue) {
+            _hookBuf.Append(ch1.Value);
             _firstCharPending = true;
         }
         return CallNextHookEx(_hook, nCode, wParam, lParam);

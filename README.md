@@ -83,9 +83,10 @@ Ghi vào Excel: STT | Thời gian | Scanner A | Scanner B | ...
 
 Phím từ máy quét sẽ không hiện vào ứng dụng đang mở (Word, Notepad, trình duyệt…). Script dùng Windows low-level keyboard hook để phát hiện và chặn chuỗi ký tự của scanner dựa vào tốc độ gõ:
 
-- Ký tự đầu tiên được thả qua (chưa xác định được nguồn)
-- Ký tự thứ 2 đến nhanh (< `SCANNER_SPEED_MS × 3`) → xác nhận là scanner → chặn toàn bộ phần còn lại + tự động xoá ký tự đầu khỏi app bằng Backspace
-- Sau lần quét đầu tiên, nếu có đúng 1 scanner và scan liên tiếp nhanh → chặn ngay từ ký tự đầu, không cần Backspace
+- **Scanner đã biết** (đã quét ít nhất 1 lần): ký tự đầu bị giữ lại (không vào app), timer `SCANNER_SPEED_MS × 3` bắt đầu đếm
+  - Ký tự thứ 2 đến nhanh → xác nhận scanner → chặn toàn bộ, ký tự đầu không bao giờ vào app
+  - Timer hết giờ mà không có ký tự thứ 2 → tái phát ký tự đầu vào app (người dùng gõ tay)
+- **Scanner chưa biết** (lần quét đầu tiên): ký tự đầu được thả qua, ký tự thứ 2 đến nhanh → chặn + xoá ký tự đầu bằng Backspace
 
 > Phím người dùng gõ tay (chậm hơn ngưỡng) vẫn hoạt động bình thường.
 
