@@ -69,6 +69,8 @@ Cắm scanner, quét 1 mã vạch bất kỳ, sau đó mở `src\USB_Reader.log`
 ```
 Máy quét mã vạch (HID)
       ↓  gửi ký tự như bàn phím + Enter
+WH_KEYBOARD_LL hook (KeyboardSuppressor)
+      ↓  chặn phím scanner, không cho hiện vào app đang focus
 Windows Raw Input API
       ↓  phân biệt từng thiết bị theo device handle
 Nhận diện scanner
@@ -76,6 +78,16 @@ Nhận diện scanner
 Ghi vào Excel: STT | Thời gian | Scanner A | Scanner B | ...
       ↓  sheet mới tạo tự động khi sang tháng mới
 ```
+
+**Cơ chế chặn phím scanner (Keyboard Suppressor)**
+
+Phím từ máy quét sẽ không hiện vào ứng dụng đang mở (Word, Notepad, trình duyệt…). Script dùng Windows low-level keyboard hook để phát hiện và chặn chuỗi ký tự của scanner dựa vào tốc độ gõ:
+
+- Ký tự đầu tiên được thả qua (chưa xác định được nguồn)
+- Ký tự thứ 2 đến nhanh (< `SCANNER_SPEED_MS × 3`) → xác nhận là scanner → chặn toàn bộ phần còn lại + tự động xoá ký tự đầu khỏi app bằng Backspace
+- Sau lần quét đầu tiên, nếu có đúng 1 scanner và scan liên tiếp nhanh → chặn ngay từ ký tự đầu, không cần Backspace
+
+> Phím người dùng gõ tay (chậm hơn ngưỡng) vẫn hoạt động bình thường.
 
 **Cấu trúc file Excel** (`thoi_gian_dong_hang.xlsx` ở thư mục gốc):
 
@@ -99,7 +111,7 @@ Chạy `test\Test_Scanner.bat` để giả lập máy quét:
 
 ```
 [1] Gửi barcode vào tháng hiện tại (script chính phải đang chạy)
-[2] Giả lập qua tháng (tự động restart script, tạo 3 sheet liên tiếp)
+[2] Giả lập qua tháng (script chính vẫn chạy, tạo 3 sheet: tháng trước | tháng này | tháng sau)
 ```
 
 Hoặc dùng PowerShell trực tiếp:
@@ -151,6 +163,16 @@ Mở `src\USB_Reader_HID.bat`, tăng giá trị `SCANNER_SPEED_MS`:
 
 ```bat
 set SCANNER_SPEED_MS=150
+```
+
+### Ký tự máy quét vẫn rớt vào ứng dụng
+
+Đây là hành vi bình thường ở **lần quét đầu tiên** — ký tự đầu sẽ xuất hiện rồi bị xoá ngay bằng Backspace. Từ lần quét thứ 2 trở đi, scanner đã được nhận diện và sẽ bị chặn hoàn toàn.
+
+Nếu vẫn rớt ký tự sau nhiều lần quét, thử giảm `SCANNER_SPEED_MS` để mở rộng ngưỡng phát hiện:
+
+```bat
+set SCANNER_SPEED_MS=50
 ```
 
 ### Cột bị lệch khi thêm/bớt scanner
