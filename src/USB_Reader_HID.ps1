@@ -411,7 +411,17 @@ public class BarcodeRawInput {
             _ids[_lastActiveDevice] = enc;
             return enc;
         }
-        return ""; // keyboard / unknown device — khong tao entry
+        return ""; // keyboard / unknown device -- khong tao entry
+    }
+
+    // Nhu GetLastActiveEncoded nhung tao entry moi neu chua co
+    // Dung cho lan quet dau tien cua scanner chua duoc dang ky
+    public static string GetOrAssignLastActive() {
+        if (_lastActiveDevice == IntPtr.Zero) return "";
+        bool isNew;
+        string enc = GetOrAssign(_lastActiveDevice, out isNew);
+        if (isNew) NewDevices.Enqueue(enc.Split('|')[0] + "\t" + GetDevicePath(_lastActiveDevice));
+        return enc;
     }
 
     // Xoa buffer cua thiet bi active cuoi (de Raw Input khong giu char1 mo coi)
@@ -781,16 +791,22 @@ public class KeyboardSuppressor {
             return new IntPtr(1);
         }
 
-        // Char 2: char 1 đã qua, char 2 đến nhanh → xác nhận đây là scanner
-        if (_firstCharPending && elapsed < detectionMs && !string.IsNullOrEmpty(lastDev)) {
-            _inScanMode     = true;
-            _capturedDevice = lastDev;
-            // _hookBuf đã có char 1; gửi Backspace xoá char 1 khỏi app
-            SendBackspace();
-            BarcodeRawInput.ClearLastActiveBuffer();
-            char? chS2 = VkToCharUs(vk, _shiftDown, _capsOn);
-            if (chS2.HasValue) _hookBuf.Append(chS2.Value);
-            return new IntPtr(1);
+        // Char 2: char 1 da qua, char 2 den nhanh → xac nhan day la scanner
+        // Neu device chua biet (lan quet dau tien), goi GetOrAssignLastActive de dang ky luon
+        if (_firstCharPending && elapsed < detectionMs) {
+            string dev = !string.IsNullOrEmpty(lastDev)
+                ? lastDev
+                : BarcodeRawInput.GetOrAssignLastActive();
+            if (!string.IsNullOrEmpty(dev)) {
+                _inScanMode     = true;
+                _capturedDevice = dev;
+                // _hookBuf da co char 1; gui Backspace xoa char 1 khoi app
+                SendBackspace();
+                BarcodeRawInput.ClearLastActiveBuffer();
+                char? chS2 = VkToCharUs(vk, _shiftDown, _capsOn);
+                if (chS2.HasValue) _hookBuf.Append(chS2.Value);
+                return new IntPtr(1);
+            }
         }
 
         // Char chậm (người dùng gõ, hoặc char 1 của scan mới) → cho qua, lưu vào buf
