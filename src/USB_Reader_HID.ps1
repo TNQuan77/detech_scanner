@@ -523,6 +523,14 @@ public class BarcodeRawInput {
             IntPtr hDevice = header.hDevice;
             _lastActiveDevice = hDevice;
 
+            // Khi hook da cai, no xu ly toan bo barcode building.
+            // Raw Input chi can cap nhat _lastActiveDevice (da lam o tren) de hook doc.
+            if (KeyboardSuppressor.IsInstalled) {
+                if (vk == 0x10 || vk == 0xA0 || vk == 0xA1) _shiftDown = true;
+                if (vk == 0x14) _capsOn = !_capsOn;
+                return;
+            }
+
             if (!_bufs.ContainsKey(hDevice))  _bufs[hDevice]  = new StringBuilder(256);
 
             var  sbuf   = _bufs[hDevice];
