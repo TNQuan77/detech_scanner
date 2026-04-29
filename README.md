@@ -168,12 +168,12 @@ set SCANNER_SPEED_MS=150
 
 ### Ký tự máy quét vẫn rớt vào ứng dụng
 
-Đây là hành vi bình thường ở **lần quét đầu tiên** — ký tự đầu sẽ xuất hiện rồi bị xoá ngay bằng Backspace. Từ lần quét thứ 2 trở đi, scanner đã được nhận diện và sẽ bị chặn hoàn toàn.
+Đây là hành vi bình thường ở **lần quét đầu tiên của scanner mới** — ký tự đầu sẽ xuất hiện rồi bị xoá ngay bằng Backspace. Từ lần quét thứ 2 trở đi, scanner đã được nhận diện và ký tự đầu bị giữ lại hoàn toàn (không bao giờ vào app).
 
-Nếu vẫn rớt ký tự sau nhiều lần quét, thử giảm `SCANNER_SPEED_MS` để mở rộng ngưỡng phát hiện:
+Nếu vẫn rớt ký tự ở lần quét đầu tiên dù đã xoá `scanner_map.txt`, thử tăng `SCANNER_SPEED_MS`:
 
 ```bat
-set SCANNER_SPEED_MS=50
+set SCANNER_SPEED_MS=150
 ```
 
 ### Cột bị lệch khi thêm/bớt scanner
